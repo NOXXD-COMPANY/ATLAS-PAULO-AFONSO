@@ -1,0 +1,19 @@
+# Arquivos e rascunhos locais pessoais
+RASCUNHO_COORDENACAO.md
+*.local
+*.tmp
+scratch/
+GITHUB_PROJECTS.md
+
+# Dados brutos e volumosos (não subir para git)
+dados-brutos/
+*.gpkg
+*.parquet
+*.geojson
+*.zip
+*.tar.gz
+
+# Ambientes virtuais e dependências
+.venv/
+env/
+node_modules/
