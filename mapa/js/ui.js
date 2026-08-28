@@ -23,17 +23,14 @@ export class UIManager {
         <div class="panel-title">Diagnóstico & Hitbox</div>
         
         <div class="control-group">
-          <label style="font-weight:600;font-size:0.76rem;">Tolerância Hitbox:</label>
-          <select id="select-tolerance" class="control-select">
-            <option value="10m" selected>Buffer 10m (81,7% match - Calçada)</option>
-            <option value="5m">Buffer 5m (60,0% match - Portão)</option>
-            <option value="0m">0 metros (14,4% match - Telhado)</option>
-          </select>
+          <label style="font-weight:600;font-size:0.76rem;">Tolerância Hitbox (buffer em metros):</label>
+          <input type="number" id="input-tolerance" class="control-select" value="10" min="0" max="100" step="0.5">
+          <div style="font-size:0.72rem;color:#6b7280;margin-top:3px;">Digite qualquer distância (até 50m, que é a associação máxima dos dados), ex.: 0, 5, 10, 25m.</div>
         </div>
 
         <div class="control-group">
           <div class="panel-section-title">Colorir Pontos CNEFE</div>
-          <label><input type="radio" name="opt-pt-color" value="status" checked> Status de Distância (0m / 10m / >10m)</label>
+          <label><input type="radio" name="opt-pt-color" value="status" checked> Status de Distância (0m / ≤buffer / &gt;buffer)</label>
           <label><input type="radio" name="opt-pt-color" value="especie"> Espécie de Uso</label>
         </div>
 
@@ -46,10 +43,20 @@ export class UIManager {
       L.DomEvent.disableClickPropagation(div);
 
       // Eventos
-      div.querySelector('#select-tolerance').addEventListener('change', (e) => {
-        this.layerManager.state.tolerance = e.target.value;
+      const tolInput = div.querySelector('#input-tolerance');
+      const applyTolerance = () => {
+        const value = parseFloat(tolInput.value);
+        if (isNaN(value) || value < 0) {
+          tolInput.value = this.layerManager.state.tolerance;
+          return;
+        }
+        this.layerManager.state.tolerance = value;
         this.updateHeaderStats();
         this.layerManager.refreshStyles();
+      };
+      tolInput.addEventListener('change', applyTolerance);
+      tolInput.addEventListener('keyup', (e) => {
+        if (e.key === 'Enter') applyTolerance();
       });
 
       div.querySelectorAll('input[name="opt-pt-color"]').forEach(r => {
@@ -108,12 +115,12 @@ export class UIManager {
             <label class="legend-filter-item">
               <input type="checkbox" id="chk-dist-buffer" checked>
               <div class="legend-dot" style="background:#f59e0b"></div>
-              <span>≤ 10m (Calçada / Testada)</span>
+              <span>Dentro do buffer <em id="lbl-buffer-dist"></em></span>
             </label>
             <label class="legend-filter-item">
               <input type="checkbox" id="chk-dist-outside" checked>
               <div class="legend-dot" style="background:#ef4444"></div>
-              <span>> 10m (Fora / Rural)</span>
+              <span>Fora do buffer <em id="lbl-outside-dist"></em></span>
             </label>
 
             <div class="panel-section-title">Espécies de Uso (CNEFE)</div>
@@ -134,12 +141,12 @@ export class UIManager {
             <div class="panel-section-title">Vínculo com CNEFE</div>
             <label class="legend-filter-item">
               <input type="checkbox" id="chk-bld-matched" checked>
-              <div class="legend-swatch" style="background:#3b82f6"></div>
-              <span>Com endereço CNEFE</span>
+              <div class="legend-swatch" style="background:linear-gradient(90deg,#3b82f6,#a855f7,#22c55e,#ef4444)"></div>
+              <span>Com endereço CNEFE (cor = espécie)</span>
             </label>
             <label class="legend-filter-item">
               <input type="checkbox" id="chk-bld-unmatched" checked>
-              <div class="legend-swatch" style="background:${CONFIG.NO_MATCH_STYLE.fill}"></div>
+              <div class="legend-swatch" style="background:${CONFIG.NO_MATCH_STYLE.fill};border:1px solid ${CONFIG.NO_MATCH_STYLE.stroke}"></div>
               <span>Sem endereço CNEFE</span>
             </label>
 
@@ -236,21 +243,58 @@ export class UIManager {
 
   // ── Atualização dos Indicadores no Cabeçalho ──
   updateHeaderStats(bldCount, ptCount) {
-    if (bldCount !== undefined) {
-      document.getElementById('stat-bld-count').textContent = bldCount.toLocaleString('pt-BR');
+    const lm = this.layerManager;
+    const blds = lm.rawBuildingsData;
+    const pts = lm.rawPointsData;
+    const tol = lm.state.tolerance;
+
+    const totalBlds = blds && blds.features ? blds.features.length : 0;
+    const totalPts  = pts && pts.features ? pts.features.length : 0;
+
+    if (bldCount !== undefined || totalBlds) {
+      document.getElementById('stat-bld-count').textContent = (bldCount !== undefined ? bldCount : totalBlds).toLocaleString('pt-BR');
     }
-    if (ptCount !== undefined) {
-      document.getElementById('stat-pt-count').textContent = ptCount.toLocaleString('pt-BR');
+    if (ptCount !== undefined || totalPts) {
+      document.getElementById('stat-pt-count').textContent = (ptCount !== undefined ? ptCount : totalPts).toLocaleString('pt-BR');
     }
 
+    // Legenda dinâmica do buffer
+    const bufLabel = document.getElementById('lbl-buffer-dist');
+    const outLabel = document.getElementById('lbl-outside-dist');
+    if (bufLabel) bufLabel.textContent = `(≤ ${tol}m)`;
+    if (outLabel) outLabel.textContent = `(> ${tol}m)`;
+
+    // ── Métricas de veracidade / funcionalidade ──
+    // Edificações que têm ≥1 ponto de endereço vinculado dentro do buffer (menor distância)
+    let matchedBlds = 0;
+    if (totalBlds) {
+      matchedBlds = blds.features.filter(f => lm.getFilteredAddresses(f).length > 0).length;
+    }
+    const bldMatchedPct = totalBlds > 0 ? (matchedBlds / totalBlds * 100).toFixed(1) : '—';
+
+    const elBldMatched = document.getElementById('stat-bld-matched');
+    const elBldPct = document.getElementById('stat-bld-matched-pct');
+    if (elBldMatched) elBldMatched.textContent = `${matchedBlds.toLocaleString('pt-BR')} / ${totalBlds.toLocaleString('pt-BR')}`;
+    if (elBldPct) elBldPct.textContent = `(${bldMatchedPct}%)`;
+
+    // Pontos CNEFE que estão dentro de, ou a menos de `tol` de, um polígono
+    let matchedPts = 0;
+    if (totalPts) {
+      matchedPts = pts.features.filter(f => f.properties.dist_to_building_m <= tol).length;
+    }
+    const ptMatchedPct = totalPts > 0 ? (matchedPts / totalPts * 100).toFixed(1) : '—';
+
+    const elPtMatched = document.getElementById('stat-pt-matched');
+    const elPtPct = document.getElementById('stat-pt-matched-pct');
+    if (elPtMatched) elPtMatched.textContent = `${matchedPts.toLocaleString('pt-BR')} / ${totalPts.toLocaleString('pt-BR')}`;
+    if (elPtPct) elPtPct.textContent = `(${ptMatchedPct}%)`;
+
+    // Taxa de coincidência ponto↔polígono (média da cobertura nos dois sentidos) p/ buffer
     const matchEl = document.getElementById('stat-match-rate');
-    const tol = this.layerManager.state.tolerance;
-    if (tol === '0m') {
-      matchEl.textContent = '8.909 (14,4% - 0m exato)';
-    } else if (tol === '5m') {
-      matchEl.textContent = '37.152 (60,0% - buffer 5m)';
-    } else {
-      matchEl.textContent = '50.641 (81,7% - buffer 10m)';
+    if (matchEl) {
+      matchEl.textContent = totalPts > 0
+        ? `${ptMatchedPct}% (buffer ${tol}m)`
+        : '—';
     }
   }
 

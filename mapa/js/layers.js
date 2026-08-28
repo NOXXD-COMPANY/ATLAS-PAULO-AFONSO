@@ -14,7 +14,7 @@ export class LayerManager {
 
     // Estado visual e filtros de diagnóstico/debug
     this.state = {
-      tolerance: '10m',          // '0m' | '5m' | '10m'
+      tolerance: 10,            // buffer da hitbox em metros (livre, ex.: 0, 5, 10, 7.5)
       buildingColorMode: 'cnfe',    // 'cnfe' | 'source'
       pointColorMode: 'status',     // 'status' | 'especie'
     };
@@ -56,11 +56,8 @@ export class LayerManager {
   // ── Filtro e contagem de endereços por tolerância ──
   getFilteredAddresses(feature) {
     const addresses = feature.properties.cnfe_enderecos || [];
-    return addresses.filter(a => {
-      if (this.state.tolerance === '0m') return a.dist_m === 0;
-      if (this.state.tolerance === '5m') return a.dist_m <= 5.0;
-      return a.dist_m <= 10.0;
-    });
+    const tol = this.state.tolerance;
+    return addresses.filter(a => a.dist_m <= tol);
   }
 
   // ── Verificação de Visibilidade da Edificação (Overture) ──
@@ -104,7 +101,7 @@ export class LayerManager {
       } else {
         fillColor = CONFIG.NO_MATCH_STYLE.fill;
         strokeColor = CONFIG.NO_MATCH_STYLE.stroke;
-        fillOpacity = 0.15;
+        fillOpacity = 0.65;
       }
     } else {
       const src = (feature.properties.sources && feature.properties.sources[0]) 
@@ -117,10 +114,10 @@ export class LayerManager {
 
     return {
       color: strokeColor,
-      weight: 1,
+      weight: count > 0 ? 1 : 1.6,
       fillColor: fillColor,
       fillOpacity: fillOpacity,
-      opacity: 0.85
+      opacity: 0.9
     };
   }
 
@@ -179,9 +176,10 @@ export class LayerManager {
     if (!this.filters.showPoints) return false;
 
     const dist = feature.properties.dist_to_building_m;
+    const tol = this.state.tolerance;
     if (dist === 0 && !this.filters.pointDistances.exact) return false;
-    if (dist > 0 && dist <= 10.0 && !this.filters.pointDistances.buffer) return false;
-    if (dist > 10.0 && !this.filters.pointDistances.outside) return false;
+    if (dist > 0 && dist <= tol && !this.filters.pointDistances.buffer) return false;
+    if (dist > tol && !this.filters.pointDistances.outside) return false;
 
     const especie = String(feature.properties.COD_ESPECIE || '8');
     if (this.filters.pointSpecies[especie] === false) return false;
@@ -193,17 +191,19 @@ export class LayerManager {
   getPointMarkerOptions(feature) {
     const dist = feature.properties.dist_to_building_m;
     const especie = String(feature.properties.COD_ESPECIE || '1');
+    const tol = this.state.tolerance;
+    const inBuffer = dist <= tol;
     let fillColor, strokeColor;
 
     if (this.state.pointColorMode === 'status') {
       if (dist === 0) {
         fillColor = '#10b981'; // 0m verde
         strokeColor = '#047857';
-      } else if (dist <= 10.0) {
-        fillColor = '#f59e0b'; // <=10m âmbar
+      } else if (inBuffer) {
+        fillColor = '#f59e0b'; // <=tol âmbar
         strokeColor = '#d97706';
       } else {
-        fillColor = '#ef4444'; // >10m vermelho
+        fillColor = '#ef4444'; // >tol vermelho
         strokeColor = '#b91c1c';
       }
     } else {
@@ -214,12 +214,12 @@ export class LayerManager {
 
     return {
       renderer: this.mapManager.canvasRenderer,
-      radius: dist <= 10 ? 4 : 3,
+      radius: inBuffer ? 4 : 3,
       fillColor: fillColor,
       color: strokeColor,
       weight: 1,
       opacity: 0.9,
-      fillOpacity: dist <= 10 ? 0.9 : 0.6
+      fillOpacity: inBuffer ? 0.9 : 0.6
     };
   }
 
@@ -228,14 +228,15 @@ export class LayerManager {
     layer.on('click', () => {
       const props = feature.properties || {};
       const dist = props.dist_to_building_m;
+      const tol = this.state.tolerance;
 
       let badge = '';
       if (dist === 0) {
         badge = `<span class="popup-badge badge-exact">✓ No Telhado Overture (0m)</span>`;
-      } else if (dist <= 10.0) {
+      } else if (dist <= tol) {
         badge = `<span class="popup-badge badge-buffer">⚡ Testada / Lote (${dist}m)</span>`;
       } else {
-        badge = `<span class="popup-badge badge-none">✗ Fora do Telhado (>10m)</span>`;
+        badge = `<span class="popup-badge badge-none">✗ Fora do Telhado (&gt;${tol}m)</span>`;
       }
 
       const html = `

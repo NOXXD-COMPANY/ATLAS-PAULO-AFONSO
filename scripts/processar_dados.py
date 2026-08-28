@@ -68,45 +68,66 @@ def main():
     transformer = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:31984", always_xy=True).transform
 
     bld_geoms_wgs84 = []
+    bld_geoms_utm = []
     for feat in buildings:
         g_wgs84 = shape(feat["geometry"])
         g_utm = transform(transformer, g_wgs84)
         feat["properties"]["area_m2"] = round(g_utm.area, 2)
         prepare(g_wgs84)
+        prepare(g_utm)
         bld_geoms_wgs84.append(g_wgs84)
+        bld_geoms_utm.append(g_utm)
 
     print(f"      Áreas calculadas em {time.time()-t0:.1f}s.")
 
     # 3. Índice espacial e matching
-    print("\n[3/5] Construindo índice espacial R-tree e associando endereços...")
+    #    Faz o matching em projeção métrica (UTM 24S) para distâncias corretas.
+    #    Procura TODOS os edifícios dentro do raio de busca e associa ao verdadeiro
+    #    mais próximo (distância geométrica ponto-polígono), maximizando o match.
+    print("\n[3/5] Construindo índice espacial R-tree (métrico) e associando endereços...")
     t0 = time.time()
-    tree = STRtree(bld_geoms_wgs84)
+    tree_utm = STRtree(bld_geoms_utm)
+
+    # Raio máximo de associação (metros). Guardamos a distância real; o usuário
+    # escolhe a tolerância visual no mapa sem precisar reprocessar.
+    SEARCH_RADIUS_M = 50.0
     bld_matches = [[] for _ in range(len(buildings))]
 
     for pt_feat in points:
         coords = pt_feat["geometry"]["coordinates"]
-        pt = Point(coords[0], coords[1])
+        pt_wgs84 = Point(coords[0], coords[1])
+        pt_utm = transform(transformer, pt_wgs84)
         props = pt_feat["properties"]
 
-        # Teste 0m (ponto dentro do polígono)
-        candidates = tree.query(pt)
+        # 1) Ponto dentro de um polígono (0m)
+        contained = tree_utm.query(pt_utm)
         matched_idx = None
         dist_m = 9999.0
 
-        for idx in candidates:
-            if bld_geoms_wgs84[idx].contains(pt):
+        for idx in contained:
+            if bld_geoms_utm[idx].contains(pt_utm):
                 matched_idx = idx
                 dist_m = 0.0
                 break
 
-        # Se fora, busca vizinho mais próximo
+        # 2) Fora: procura os edifícios cuja bbox cai dentro do buffer e
+        #    mede a distância geométrica real de cada um, ficando com o mais próximo.
         if matched_idx is None:
-            nearest_idx = tree.nearest(pt)
-            dist_deg = pt.distance(bld_geoms_wgs84[nearest_idx])
-            dist_calc = dist_deg * 111139.0
-            if dist_calc <= 15.0:
-                matched_idx = nearest_idx
-                dist_m = round(dist_calc, 1)
+            candidates = tree_utm.query(pt_utm.buffer(SEARCH_RADIUS_M))
+            best_idx = None
+            best_dist = float("inf")
+            for idx in candidates:
+                if bld_geoms_utm[idx].contains(pt_utm):
+                    # caiu dentro no buffer de busca, mas não no teste acima — raro
+                    d = 0.0
+                else:
+                    d = pt_utm.distance(bld_geoms_utm[idx])
+                if d < best_dist:
+                    best_dist = d
+                    best_idx = idx
+            if best_idx is not None and best_dist <= SEARCH_RADIUS_M:
+                matched_idx = best_idx
+                dist_m = round(best_dist, 1)
 
         if matched_idx is not None:
             record = {

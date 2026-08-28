@@ -12,6 +12,9 @@ body {
   color: #1f2937;
   background-color: #f3f4f6;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
 }
 
 /* ── Cabeçalho / Barra Superior ── */
@@ -19,10 +22,12 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
   padding: 8px 16px;
   background: #ffffff;
   border-bottom: 1px solid #e5e7eb;
-  height: 48px;
+  min-height: 48px;
   z-index: 1000;
   position: relative;
 }
@@ -40,9 +45,22 @@ body {
 .app-stats {
   display: flex;
   align-items: center;
-  gap: 16px;
-  font-size: 0.82rem;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 0.78rem;
   color: #4b5563;
+  justify-content: flex-end;
+}
+
+.app-stats strong {
+  color: #111827;
+  font-weight: 700;
+}
+
+.app-stats em {
+  font-style: normal;
+  font-weight: 600;
+  color: #2563eb;
 }
 
 .app-stats strong {
@@ -67,7 +85,8 @@ body {
 /* ── Contêiner do Mapa ── */
 #map {
   width: 100%;
-  height: calc(100vh - 48px);
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 /* ── Painéis de Controle e Legenda (Leaflet) ── */
@@ -158,6 +177,12 @@ body {
 
 .legend-filter-item:hover {
   color: #111827;
+}
+
+.legend-filter-item em {
+  font-style: normal;
+  color: #9ca3af;
+  font-weight: 500;
 }
 
 .legend-item {

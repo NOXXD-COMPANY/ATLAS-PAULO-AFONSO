@@ -33,9 +33,10 @@ export const CONFIG = {
     other:     { fill: '#8b5cf6', stroke: '#7c3aed', label: 'Outro' }
   },
 
-  // Estilo para edificação sem match
+  // Estilo para edificação sem match (sem endereço CNEFE)
+  // Grafite bem escuro com borda preta — bem visível e distinto das espécies coloridas.
   NO_MATCH_STYLE: {
-    fill: '#9ca3af',
-    stroke: '#6b7280'
+    fill: '#4b5563',
+    stroke: '#000000'
   }
 };

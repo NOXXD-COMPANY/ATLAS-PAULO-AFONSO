@@ -20,9 +20,11 @@
   <header class="app-header">
     <h1 class="app-title">Atlas Urbano de <span>Paulo Afonso</span> <small style="font-size:0.75rem;color:#6b7280;font-weight:normal;">(Debug Inicial)</small></h1>
     <div class="app-stats">
-      <span>Edificações (Overture): <strong id="stat-bld-count">…</strong></span>
-      <span>Endereços (CNEFE): <strong id="stat-pt-count">…</strong></span>
-      <span>Match: <strong id="stat-match-rate">—</strong></span>
+      <span title="Total de polígonos de edificações (Overture Maps)">Edificações: <strong id="stat-bld-count">…</strong></span>
+      <span title="Total de pontos de endereço (CNEFE / IBGE)">Endereços: <strong id="stat-pt-count">…</strong></span>
+      <span title="Edificações que têm pelo menos um ponto de endereço vinculado dentro do buffer">Edificações c/ ponto: <strong id="stat-bld-matched">…</strong> <em id="stat-bld-matched-pct"></em></span>
+      <span title="Pontos de endereço que caem dentro (ou são atribuídos a) um polígono dentro do buffer">Pontos p/ edifício: <strong id="stat-pt-matched">…</strong> <em id="stat-pt-matched-pct"></em></span>
+      <span title="Taxa de coincidência (cobertura ponto↔polígono)">Coincidência: <strong id="stat-match-rate">—</strong></span>
       <button id="btn-open-stats" class="btn-modal">📊 Tabela de Bairros</button>
     </div>
   </header>
