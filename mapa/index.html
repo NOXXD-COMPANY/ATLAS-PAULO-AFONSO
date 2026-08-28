@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Atlas Urbano de Paulo Afonso — Mapa Interativo</title>
+
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+        crossorigin="" />
+
+  <!-- Estilo Base da Aplicação -->
+  <link rel="stylesheet" href="css/style.css">
+</head>
+
+<body>
+
+  <!-- Barra Superior da Aplicação (Modo Debug Inicial) -->
+  <header class="app-header">
+    <h1 class="app-title">Atlas Urbano de <span>Paulo Afonso</span> <small style="font-size:0.75rem;color:#6b7280;font-weight:normal;">(Debug Inicial)</small></h1>
+    <div class="app-stats">
+      <span>Edificações (Overture): <strong id="stat-bld-count">…</strong></span>
+      <span>Endereços (CNEFE): <strong id="stat-pt-count">…</strong></span>
+      <span>Match: <strong id="stat-match-rate">—</strong></span>
+      <button id="btn-open-stats" class="btn-modal">📊 Tabela de Bairros</button>
+    </div>
+  </header>
+
+  <!-- Contêiner do Mapa Leaflet -->
+  <main id="map"></main>
+
+  <!-- Tela de Carregamento -->
+  <div id="loading-screen" class="loading-screen">
+    <div class="loading-spinner"></div>
+    <p id="loading-text" class="loading-text">Carregando dados geoespaciais…</p>
+  </div>
+
+  <!-- Modal de Estatísticas Territoriais -->
+  <div id="modal-stats" class="modal-backdrop">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h2>Tabela Territorial por Bairro / Localidade</h2>
+        <button id="btn-close-stats" class="modal-close" aria-label="Fechar">&times;</button>
+      </div>
+      <div class="modal-body">
+        <table class="stats-table">
+          <thead>
+            <tr>
+              <th>Bairro / Localidade</th>
+              <th>Edificações</th>
+              <th>Área Total (m²)</th>
+              <th>Área Mediana (m²)</th>
+              <th>Endereços CNFE</th>
+              <th>Domicílios</th>
+              <th>Saúde</th>
+              <th>Ensino</th>
+            </tr>
+          </thead>
+          <tbody id="stats-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+          crossorigin=""></script>
+
+  <!-- Módulos JavaScript da Aplicação -->
+  <script type="module" src="js/main.js"></script>
+
+</body>
+</html>
