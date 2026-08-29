@@ -3,6 +3,9 @@
  */
 
 import { CONFIG } from './config.js';
+import { Logger } from './logger.js';
+
+const log = Logger.create('layers');
 
 export class LayerManager {
   constructor(mapManager) {
@@ -51,6 +54,7 @@ export class LayerManager {
   setRawData(buildingsData, pointsData) {
     this.rawBuildingsData = buildingsData;
     this.rawPointsData = pointsData;
+    log.info('Dados brutos registrados', { buildings: buildingsData.features.length, points: pointsData.features.length });
   }
 
   // ── Filtro e contagem de endereços por tolerância ──
@@ -264,6 +268,7 @@ export class LayerManager {
       onEachFeature: (feature, layer) => this.bindBuildingPopup(feature, layer),
       renderer: this.mapManager.canvasRenderer
     });
+    log.info('Camada de edificações criada', { features: geojsonData.features.length });
     return this.buildingsLayer;
   }
 
@@ -276,6 +281,7 @@ export class LayerManager {
       },
       onEachFeature: (feature, layer) => this.bindPointPopup(feature, layer)
     });
+    log.info('Camada de pontos criada', { features: geojsonData.features.length });
     return this.pointsLayer;
   }
 
@@ -292,5 +298,6 @@ export class LayerManager {
       };
       this.pointsLayer.addData(filtered);
     }
+    log.debug('Estilos atualizados', { tolerance: this.state.tolerance, buildingColorMode: this.state.buildingColorMode, pointColorMode: this.state.pointColorMode });
   }
 }

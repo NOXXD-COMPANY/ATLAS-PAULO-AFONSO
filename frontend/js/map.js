@@ -3,6 +3,9 @@
  */
 
 import { CONFIG } from './config.js';
+import { Logger } from './logger.js';
+
+const log = Logger.create('map');
 
 export class MapManager {
   constructor(containerId = 'map') {
@@ -26,6 +29,7 @@ export class MapManager {
     });
 
     L.control.scale({ metric: true, imperial: false }).addTo(this.map);
+    log.info('Mapa Leaflet inicializado', { center: CONFIG.MAP_CENTER, zoom: CONFIG.MAP_DEFAULT_ZOOM });
   }
 
   initBaseLayers() {
@@ -63,6 +67,8 @@ export class MapManager {
       'Esri Satélite': esriSatellite,
       'OpenStreetMap': osmStandard
     };
+    
+    log.debug('Camadas base configuradas', { layers: Object.keys(this.baseLayers) });
   }
 
   setupLayerControl(overlays) {
@@ -70,5 +76,6 @@ export class MapManager {
     this.layerControl = L.control.layers(this.baseLayers, this.overlayLayers, {
       collapsed: false
     }).addTo(this.map);
+    log.info('Controle de camadas configurado', { overlays: Object.keys(overlays) });
   }
 }

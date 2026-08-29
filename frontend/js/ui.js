@@ -3,6 +3,9 @@
  */
 
 import { CONFIG } from './config.js';
+import { Logger } from './logger.js';
+
+const log = Logger.create('ui');
 
 export class UIManager {
   constructor(mapManager, layerManager) {
@@ -12,6 +15,7 @@ export class UIManager {
     this.initHeaderButtons();
     this.initControlPanel();
     this.initInteractiveLegend();
+    log.info('Interface UI inicializada');
   }
 
   // ── Painel de Configuração Rápida / Hitbox ──
@@ -51,6 +55,7 @@ export class UIManager {
           return;
         }
         this.layerManager.state.tolerance = value;
+        log.info('Tolerância alterada', { tolerance: value });
         this.updateHeaderStats();
         this.layerManager.refreshStyles();
       };
@@ -62,6 +67,7 @@ export class UIManager {
       div.querySelectorAll('input[name="opt-pt-color"]').forEach(r => {
         r.addEventListener('change', (e) => {
           this.layerManager.state.pointColorMode = e.target.value;
+          log.debug('Modo de cor alterado', { target: 'points', mode: e.target.value });
           this.layerManager.refreshStyles();
         });
       });
@@ -69,6 +75,7 @@ export class UIManager {
       div.querySelectorAll('input[name="opt-bld-color"]').forEach(r => {
         r.addEventListener('change', (e) => {
           this.layerManager.state.buildingColorMode = e.target.value;
+          log.debug('Modo de cor alterado', { target: 'buildings', mode: e.target.value });
           this.layerManager.refreshStyles();
         });
       });
@@ -305,10 +312,10 @@ export class UIManager {
     const btnClose = document.getElementById('btn-close-stats');
 
     if (btnStats && modal && btnClose) {
-      btnStats.addEventListener('click', () => { modal.style.display = 'flex'; });
-      btnClose.addEventListener('click', () => { modal.style.display = 'none'; });
+      btnStats.addEventListener('click', () => { modal.style.display = 'flex'; log.debug('Modal de estatísticas aberto'); });
+      btnClose.addEventListener('click', () => { modal.style.display = 'none'; log.debug('Modal de estatísticas fechado'); });
       modal.addEventListener('click', (e) => {
-        if (e.target === modal) modal.style.display = 'none';
+        if (e.target === modal) { modal.style.display = 'none'; log.debug('Modal de estatísticas fechado'); }
       });
     }
   }
@@ -333,5 +340,6 @@ export class UIManager {
       `;
     });
     tbody.innerHTML = html;
+    log.info('Tabela de bairros populada', { rows: statsData.length });
   }
 }

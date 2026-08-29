@@ -25,4 +25,7 @@ data/raw/
 *.gpkg
 *.parquet
 *.zip
-*.tar.gz
+*.tar.gz
+
+# Logs de pipeline
+logs/

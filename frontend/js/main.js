@@ -6,27 +6,42 @@ import { CONFIG } from './config.js';
 import { MapManager } from './map.js';
 import { LayerManager } from './layers.js';
 import { UIManager } from './ui.js';
+import { Logger } from './logger.js';
+
+const log = Logger.create('main');
 
 async function bootstrap() {
   const loadingScreen = document.getElementById('loading-screen');
   const loadingText   = document.getElementById('loading-text');
 
+  log.info('Bootstrap started');
+  const bootStart = performance.now();
+
   try {
     // 1. Inicializa o mapa base
     const mapManager = new MapManager('map');
+    log.info('Mapa inicializado');
     const layerManager = new LayerManager(mapManager);
 
     // 2. Carrega Edificações (Overture Maps)
     loadingText.textContent = 'Carregando 55k territórios de edificações (Overture Maps)…';
+    log.info('Carregando edificações...', { url: CONFIG.DATA_PATHS.BUILDINGS });
+    let t0 = performance.now();
     const resBld = await fetch(CONFIG.DATA_PATHS.BUILDINGS);
     if (!resBld.ok) throw new Error('Falha ao baixar edificações GeoJSON');
     const buildingsData = await resBld.json();
+    let t1 = performance.now();
+    log.info('Edificações carregadas', { count: buildingsData.features.length, duration_ms: t1 - t0 });
 
     // 3. Carrega Pontos de Endereço (CNEFE / IBGE)
     loadingText.textContent = 'Carregando 62k pontos de endereços (CNEFE / IBGE)…';
+    log.info('Carregando pontos...', { url: CONFIG.DATA_PATHS.POINTS });
+    t0 = performance.now();
     const resPts = await fetch(CONFIG.DATA_PATHS.POINTS);
     if (!resPts.ok) throw new Error('Falha ao baixar pontos CNEFE');
     const pointsData = await resPts.json();
+    t1 = performance.now();
+    log.info('Pontos carregados', { count: pointsData.features.length, duration_ms: t1 - t0 });
 
     // 4. Registra dados brutos no LayerManager
     layerManager.setRawData(buildingsData, pointsData);
@@ -36,9 +51,11 @@ async function bootstrap() {
 
     const pointsLayer = layerManager.createPointsLayer(pointsData);
     pointsLayer.addTo(mapManager.map);
+    log.info('Camadas criadas');
 
     // 5. Inicializa Interface de Usuário com Filtros de Debug
     const uiManager = new UIManager(mapManager, layerManager);
+    log.info('Interface inicializada');
 
     // 6. Configura controle mestre de camadas Leaflet
     mapManager.setupLayerControl({
@@ -54,7 +71,7 @@ async function bootstrap() {
         uiManager.populateStatsTable(statsData);
       }
     } catch (e) {
-      console.warn('Estatísticas de bairros não carregadas:', e);
+      log.warn('Estatísticas de bairros não carregadas', { error: e.message });
     }
 
     // 8. Atualiza cabeçalho de debug e encerra loading
@@ -64,11 +81,13 @@ async function bootstrap() {
     );
 
     loadingScreen.style.display = 'none';
+    
+    log.info('Bootstrap concluído', { buildings: buildingsData.features.length, points: pointsData.features.length, total_duration_ms: performance.now() - bootStart });
 
   } catch (error) {
     loadingText.textContent = `Erro ao carregar dados: ${error.message}`;
     loadingText.style.color = '#ef4444';
-    console.error(error);
+    log.error('Falha fatal no bootstrap', { error: error.message, stack: error.stack });
   }
 }
 

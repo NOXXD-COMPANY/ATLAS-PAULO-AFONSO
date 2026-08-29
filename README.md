@@ -30,3 +30,37 @@ python -m http.server 8080
 
 * Raiz do projeto: http://127.0.0.1:8080/
 * Aplicação web (mapa): http://127.0.0.1:8080/frontend/
+
+### 4. LOGS ESTRUTURADOS
+
+
+#### BACKEND 
+
+Logs são escritos em JSON (uma entrada por linha) em `logs/pipeline_YYYY-MM-DD.log` e em formato legível no console.
+
+```bash
+# LOGS MAIS SIMPLES
+python backend/processar_dados.py
+
+# LOGS MAIS DETALHADOS PARA DEBUG
+python backend/processar_dados.py --debug
+
+# DIRETORIO DA SUA ESCOLHA
+python backend/processar_dados.py --log-dir ./meus_logs
+```
+
+#### FRONTEND CONSOLE DO NAVEGADOR
+
+Logs são armazenados em `localStorage` (últimas 500 entradas) e impressos no console do navegador com timestamps e IDs de sessão.
+
+```js
+// NO CONSOLE DO NAVEGADO - F12 
+__AtlasLogs.export()     // RETORNA O JSON NO CONSOLE [TUDO]
+__AtlasLogs.download()   // BAIXA OS LOGS EM JSON
+__AtlasLogs.clear()      // LIMPA O CONSOLE
+```
+
+LOG PARA DEBUG, VA NA URL `?logLevel=debug` :
+```
+http://127.0.0.1:8080/frontend/?logLevel=debug
+```

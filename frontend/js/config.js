@@ -3,6 +3,9 @@
  */
 
 export const CONFIG = {
+  // Configuração de Log
+  LOG_LEVEL: 'INFO',
+
   // Caminhos dos dados processados
   DATA_PATHS: {
     BUILDINGS: '../data/processed/edificacoes_com_cnfe.geojson',
