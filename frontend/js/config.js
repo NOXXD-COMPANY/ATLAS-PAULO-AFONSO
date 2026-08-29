@@ -5,9 +5,9 @@
 export const CONFIG = {
   // Caminhos dos dados processados
   DATA_PATHS: {
-    BUILDINGS: '../dados_processados/edificacoes_com_cnfe.geojson',
-    POINTS: '../dados_processados/cnfe_pontos.geojson',
-    STATS: '../dados_processados/estatisticas_bairros.json'
+    BUILDINGS: '../data/processed/edificacoes_com_cnfe.geojson',
+    POINTS: '../data/processed/cnfe_pontos.geojson',
+    STATS: '../data/processed/estatisticas_bairros.json'
   },
 
   // Coordenadas iniciais (Paulo Afonso - BA)

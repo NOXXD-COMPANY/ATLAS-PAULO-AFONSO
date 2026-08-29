@@ -9,7 +9,7 @@ Etapas:
 5. Enriquece as geometrias e exporta GeoJSONs e tabela de estatísticas por bairro.
 
 Uso:
-    python scripts/processar_dados.py
+    python backend/processar_dados.py
 """
 
 import json
@@ -25,14 +25,17 @@ import pyproj
 
 # Diretórios base
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DADOS_DIR = os.path.join(BASE_DIR, "dados_processados")
+DATA_RAW_DIR = os.path.join(BASE_DIR, "data", "raw")
+DATA_PROCESSED_DIR = os.path.join(BASE_DIR, "data", "processed")
 
-OVERTURE_INPUT = os.path.join(DADOS_DIR, "edificacoes_overture.geojson")
-CNFE_INPUT = os.path.join(DADOS_DIR, "dados_cnfe.json")
+# Arquivos de entrada (raw data)
+OVERTURE_INPUT = os.path.join(DATA_RAW_DIR, "overture", "edificacoes_overture.geojson")
+CNFE_INPUT = os.path.join(DATA_RAW_DIR, "cnefe_json", "dados_cnfe.json")
 
-BUILDINGS_OUTPUT = os.path.join(DADOS_DIR, "edificacoes_com_cnfe.geojson")
-POINTS_OUTPUT = os.path.join(DADOS_DIR, "cnfe_pontos.geojson")
-STATS_OUTPUT = os.path.join(DADOS_DIR, "estatisticas_bairros.json")
+# Arquivos de saída (processed data para consumo do frontend)
+BUILDINGS_OUTPUT = os.path.join(DATA_PROCESSED_DIR, "edificacoes_com_cnfe.geojson")
+POINTS_OUTPUT = os.path.join(DATA_PROCESSED_DIR, "cnfe_pontos.geojson")
+STATS_OUTPUT = os.path.join(DATA_PROCESSED_DIR, "estatisticas_bairros.json")
 
 ESPECIE_MAP = {
     "1": "Domicílio particular",

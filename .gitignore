@@ -1,20 +1,28 @@
+# Python & Ambientes Virtuais
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+*.egg-info/
+
 # Arquivos e rascunhos locais pessoais
 RASCUNHO_COORDENACAO.md
 *.local
 *.tmp
 scratch/
 GITHUB_PROJECTS.md
+.DS_Store
+Thumbs.db
+.ai-jail
 
-# Dados brutos e volumosos (não subir para git)
-dados-brutos/
+# Dependências Node
+node_modules/
+
+# Dados volumosos / brutos (rastrear apenas scripts e docs no Git)
+data/raw/
 *.gpkg
 *.parquet
-*.geojson
 *.zip
-*.tar.gz
-
-# Ambientes virtuais e dependências
-.venv/
-env/
-node_modules/
-.ai-jail
+*.tar.gz
