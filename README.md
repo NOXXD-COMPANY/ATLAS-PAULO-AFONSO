@@ -22,14 +22,16 @@ dados reais (Overture + QG/CNEFE)
 | `qg_810_endereco_*.json`         | Endereços/estabelecimentos (61.965 pontos QG)   |
 
 A tabela `buildings` tem uma linha por endereço QG (61.965) mais os
-prédios Overture sem nenhum endereço (3.677), totalizando 65.642
+prédios Overture sem nenhum endereço (3.316), totalizando 65.281
 edificações. Endereço dentro de um prédio usa o polígono dele (relação
-espacial com ~6 m de tolerância na borda); endereço sem prédio vira um
-círculo de ~5 m ao redor do ponto. No mapa, a caixa de legenda tem um
-checkbox para mostrar ou ocultar esses endereços sem prédio. O tipo de uso vem do **código de
-espécie** do QG (`1`=residencial, `2`=hospedagem, `3`=agropecuário,
-`4`=institucional, `5`=serviço, `6`=comercial, `7`=misto, `8`=religioso);
-sem informação → `desconhecido`.
+espacial com ~15 m de tolerância na borda); endereço sem prédio vira um
+círculo de ~5 m ao redor do ponto. O QG cobre Paulo Afonso inteira e o
+Overture só a janela do mapa, por isso só ~26% dos endereços têm polígono.
+O tipo de uso vem do **código de espécie** do QG (`1`=residencial,
+`2`=hospedagem, `3`=agropecuário, `4`=institucional, `5`=serviço,
+`6`=comercial, `8`=religioso); `7` (em construção) e sem informação →
+`desconhecido`. Na legenda há um checkbox para mostrar ou ocultar os
+endereços sem prédio.
 
 ## Como rodar
 
@@ -83,7 +85,8 @@ data/raw/           arquivos fornecidos (overture/ e qg/)
 
 - **3D**: habilitado apenas de forma trivial: prédios com `num_pavimentos`
   (presente em 33 edificações do Overture) recebem extrusão `pavimentos × 3 m`.
-  O restante permanece 2D. Incline a câmera (botão direito arrastar) para ver.
+  O restante permanece 2D. A base (OpenFreeMap) também desenha os prédios
+  do OSM em 3D. Incline a câmera (botão direito arrastar) para ver.
 - **Ponto de extensão**: a carga estática (script) e o endpoint
   `GET /api/buildings` são os lugares onde entra uma futura fonte real
   (importação IBGE/prefeitura, filtros `?bairro=X`, paginação).
