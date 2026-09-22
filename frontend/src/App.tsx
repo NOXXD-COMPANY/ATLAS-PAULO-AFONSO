@@ -115,10 +115,21 @@ export default function App() {
   useEffect(() => {
     async function load() {
       try {
-        const res = await fetch(`${API_URL}/api/buildings`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const fc = (await res.json()) as GeoJsonFC;
-        setData(fc);
+        for (let attempt = 1; ; attempt++) {
+          try {
+            const res = await fetch(`${API_URL}/api/buildings`);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const fc = (await res.json()) as GeoJsonFC;
+            if (!fc || !Array.isArray(fc.features)) {
+              throw new Error('resposta inválida da API');
+            }
+            setData(fc);
+            return;
+          } catch (err) {
+            if (attempt >= 5) throw err;
+            await new Promise((r) => setTimeout(r, 2000));
+          }
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Erro ao carregar dados');
       } finally {
@@ -192,6 +203,8 @@ export default function App() {
     );
   }, [data]);
 
+  const total = data?.features.length ?? 0;
+
   const closePanel = useCallback(() => setSelectedId(null), []);
 
   const P = selectedFeature?.properties as BuildingProps | undefined;
@@ -239,7 +252,7 @@ export default function App() {
 
       {legenda.length > 0 && (
         <div className="legend">
-          <h4>Uso da edificação</h4>
+          <h4>Uso da edificação ({total.toLocaleString('pt-BR')})</h4>
           {legenda.map(({ tipo, n }) => (
             <div key={tipo} className="legend-item">
               <span
