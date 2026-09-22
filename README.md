@@ -71,7 +71,8 @@ backend/            API FastAPI (nunca acessa o MySQL pelo frontend)
   main.py           rotas /api/buildings e /api/buildings/{id}
   requirements.txt  dependências Python do backend
 frontend/           React + Vite + TS + MapLibre + deck.gl
-  src/App.tsx       mapa, camada de prédios, clique, painel, legenda
+  src/App.tsx       mapa, camadas, painel, legenda, relatório
+  src/Report.tsx    relatório (totais por tipo/bairro, filtros)
   src/constants.ts  cores por tipo de uso
 scripts/
   db.sh             sobe/para o MariaDB local

@@ -5,6 +5,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import { MapboxOverlay } from '@deck.gl/mapbox';
 import { GeoJsonLayer } from '@deck.gl/layers';
 import { TIPOS_ORDEM, corDoTipo, FONTE_PONTO } from './constants';
+import Report from './Report';
 
 interface BuildingProps {
   id: string;
@@ -24,7 +25,7 @@ type GeoJsonFeature = {
   properties: BuildingProps | Record<string, unknown>;
 };
 
-type GeoJsonFC = { type: 'FeatureCollection'; features: GeoJsonFeature[] };
+export type GeoJsonFC = { type: 'FeatureCollection'; features: GeoJsonFeature[] };
 
 const API_URL = 'http://127.0.0.1:8000';
 
@@ -65,6 +66,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showPontos, setShowPontos] = useState(true);
+  const [showReport, setShowReport] = useState(false);
 
   useEffect(() => {
     if (!mapContainer.current) return;
@@ -230,6 +232,15 @@ export default function App() {
     <>
       <div ref={mapContainer} className="map-container" />
 
+      {!loading && visibleData && (
+        <button
+          className="report-button"
+          onClick={() => setShowReport(true)}
+        >
+          Relatório
+        </button>
+      )}
+
       {loading && (
         <div
           style={{
@@ -297,6 +308,10 @@ export default function App() {
         <div className="empty-hint">
           Clique em um prédio para ver os dados
         </div>
+      )}
+
+      {showReport && visibleData && (
+        <Report data={visibleData} onClose={() => setShowReport(false)} />
       )}
 
       {P && (
