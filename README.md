@@ -72,7 +72,7 @@ scripts/
   run.sh            sobe tudo
   mysql-local.cnf   tmpdir do MariaDB (sem /var/tmp no ambiente)
 import_data.py      Overture + QG → relação espacial → tabela `buildings`
-data/raw/           arquivos fornecidos (descompactados)
+data/raw/           arquivos fornecidos (overture/ e qg/)
 ```
 
 ## Notas / decisões
