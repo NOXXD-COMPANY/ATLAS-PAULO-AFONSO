@@ -1,0 +1,755 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Atlas Urbano de Paulo Afonso — projeto de extensão</title>
+<style>
+  :root{
+    --bg:#FAFAF7; --surface:#FFFFFF; --surface-2:#F4F2EC;
+    --ink:#1A1A17; --ink-2:#43423B; --muted:#6E6C62;
+    --accent:#1F5D8A; --accent-soft:#DCE9F3;
+    --teal:#1F5D5A; --teal-soft:#DCEBE9;
+    --danger:#9B2C2C; --danger-soft:#F8E3E1;
+    --ok:#2C6E49; --ok-soft:#DFEFE4;
+    --border:#E3E0D6; --border-2:#D2CEC0;
+    --shadow:0 1px 2px rgba(26,26,23,.05), 0 8px 24px -12px rgba(26,26,23,.18);
+    --radius:12px; --maxw:1180px;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    --serif:ui-serif,Georgia,"Times New Roman",serif;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#121210; --surface:#1B1B18; --surface-2:#232320;
+      --ink:#EDEAE1; --ink-2:#C7C3B8; --muted:#928E82;
+      --accent:#6FAFDC; --accent-soft:#16293A;
+      --teal:#7FC7C1; --teal-soft:#16302E;
+      --danger:#E88A82; --danger-soft:#3A211F;
+      --ok:#8CCBA3; --ok-soft:#1B2E22;
+      --border:#2E2E29; --border-2:#3D3C35;
+      --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+    }
+  }
+  :root[data-theme="light"]{
+    --bg:#FAFAF7; --surface:#FFFFFF; --surface-2:#F4F2EC;
+    --ink:#1A1A17; --ink-2:#43423B; --muted:#6E6C62;
+    --accent:#1F5D8A; --accent-soft:#DCE9F3;
+    --teal:#1F5D5A; --teal-soft:#DCEBE9;
+    --danger:#9B2C2C; --danger-soft:#F8E3E1;
+    --ok:#2C6E49; --ok-soft:#DFEFE4;
+    --border:#E3E0D6; --border-2:#D2CEC0;
+    --shadow:0 1px 2px rgba(26,26,23,.05), 0 8px 24px -12px rgba(26,26,23,.18);
+  }
+  :root[data-theme="dark"]{
+    --bg:#121210; --surface:#1B1B18; --surface-2:#232320;
+    --ink:#EDEAE1; --ink-2:#C7C3B8; --muted:#928E82;
+    --accent:#6FAFDC; --accent-soft:#16293A;
+    --teal:#7FC7C1; --teal-soft:#16302E;
+    --danger:#E88A82; --danger-soft:#3A211F;
+    --ok:#8CCBA3; --ok-soft:#1B2E22;
+    --border:#2E2E29; --border-2:#3D3C35;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+  }
+
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth; scroll-padding-top:84px}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
+       font-size:16px;line-height:1.65;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  a{color:var(--accent);text-decoration:none;border-bottom:1px solid transparent}
+  a:hover{border-bottom-color:currentColor}
+  h1,h2,h3,h4{font-family:var(--serif);line-height:1.2;margin:0;letter-spacing:-.01em}
+  code,kbd{font-family:var(--mono);font-size:.88em;background:var(--surface-2);
+       padding:.12em .38em;border-radius:5px;border:1px solid var(--border)}
+
+  .topbar{position:sticky;top:0;z-index:50;background:var(--bg);border-bottom:1px solid var(--border)}
+  .topbar-in{max-width:var(--maxw);margin:0 auto;padding:.6rem 1.25rem;display:flex;gap:1rem;align-items:center}
+  .brand{font-family:var(--serif);font-weight:600;font-size:1rem;white-space:nowrap}
+  .brand span{color:var(--accent)}
+  .tools{margin-left:auto;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
+  .search{background:var(--surface);border:1px solid var(--border-2);color:var(--ink);
+     border-radius:999px;padding:.4rem .9rem;font:inherit;font-size:.85rem;width:min(240px,42vw)}
+  .search:focus{outline:2px solid var(--accent);outline-offset:1px}
+  .iconbtn{background:var(--surface);border:1px solid var(--border-2);color:var(--ink-2);
+     border-radius:999px;padding:.4rem .8rem;font:inherit;font-size:.82rem;cursor:pointer}
+  .iconbtn:hover{border-color:var(--accent);color:var(--accent)}
+
+  .shell{max-width:var(--maxw);margin:0 auto;padding:0 1.25rem 6rem;
+     display:grid;grid-template-columns:216px minmax(0,1fr);gap:2.5rem}
+  @media (max-width:900px){ .shell{grid-template-columns:1fr;gap:0} .sidenav{display:none} }
+  .sidenav{position:sticky;top:70px;align-self:start;max-height:calc(100vh - 90px);
+     overflow-y:auto;padding:1.5rem 0;font-size:.84rem}
+  .sidenav a{display:block;color:var(--muted);padding:.3rem .6rem;border-left:2px solid var(--border);
+     border-bottom:0;border-radius:0 4px 4px 0}
+  .sidenav a:hover{color:var(--ink);background:var(--surface-2)}
+  .sidenav a.active{color:var(--accent);border-left-color:var(--accent);
+     background:var(--accent-soft);font-weight:600}
+  .sidenav .grp{text-transform:uppercase;letter-spacing:.08em;font-size:.66rem;color:var(--muted);
+     padding:1.1rem .6rem .3rem;font-weight:700}
+
+  main{min-width:0;padding-top:1.5rem}
+  section{scroll-margin-top:84px;margin-bottom:3.5rem}
+  .eyebrow{text-transform:uppercase;letter-spacing:.1em;font-size:.68rem;font-weight:700;
+     color:var(--accent);margin-bottom:.45rem}
+  h2{font-size:1.65rem;margin-bottom:.5rem}
+  h3{font-size:1.12rem;margin:1.6rem 0 .5rem}
+  p{margin:.7rem 0;color:var(--ink-2)}
+  .lead{font-size:1.05rem;color:var(--ink-2)}
+
+  .hero{padding:3rem 0 1rem;border-bottom:1px solid var(--border);margin-bottom:2.5rem}
+  .hero h1{font-size:clamp(2rem,4.6vw,3rem);margin-bottom:.6rem}
+  .hero .sub{font-size:1.08rem;color:var(--muted);max-width:62ch}
+  .chips{display:flex;flex-wrap:wrap;gap:.45rem;margin-top:1.2rem}
+  .chip{font-size:.74rem;font-weight:600;padding:.28rem .7rem;border-radius:999px;
+     border:1px solid var(--border-2);background:var(--surface);color:var(--ink-2);white-space:nowrap}
+  .chip.blue{background:var(--accent-soft);border-color:transparent;color:var(--accent)}
+  .chip.teal{background:var(--teal-soft);border-color:transparent;color:var(--teal)}
+  .chip.green{background:var(--ok-soft);border-color:transparent;color:var(--ok)}
+
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:.75rem;margin:1.5rem 0}
+  .stat{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:.95rem 1rem}
+  .stat .n{font-family:var(--serif);font-size:1.75rem;line-height:1.05;color:var(--accent);
+     font-variant-numeric:tabular-nums}
+  .stat .l{font-size:.76rem;color:var(--muted);margin-top:.3rem;line-height:1.35}
+
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+     padding:1.15rem 1.3rem;box-shadow:var(--shadow);margin:1rem 0}
+  .card.bar{border-left:4px solid var(--accent)}
+  .card.bar-red{border-left:4px solid var(--danger)}
+  .card.bar-teal{border-left:4px solid var(--teal)}
+  .card h4{font-size:1.02rem;margin-bottom:.3rem}
+  .card .meta{font-size:.74rem;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;
+     font-weight:700;margin-bottom:.45rem}
+  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem}
+  .grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:1rem}
+
+  details.fase{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+     margin:.7rem 0;overflow:hidden;box-shadow:var(--shadow)}
+  details.fase>summary{cursor:pointer;padding:1rem 1.2rem;display:flex;gap:.85rem;align-items:flex-start;list-style:none}
+  details.fase>summary::-webkit-details-marker{display:none}
+  details.fase>summary:hover{background:var(--surface-2)}
+  details.fase[open]>summary{border-bottom:1px solid var(--border);background:var(--surface-2)}
+  .fase-n{font-family:var(--serif);font-size:1.15rem;font-weight:700;color:var(--accent);
+     min-width:2.3rem;font-variant-numeric:tabular-nums}
+  .fase-t{flex:1;min-width:0}
+  .fase-t b{display:block;font-family:var(--serif);font-size:1.04rem;font-weight:600;color:var(--ink)}
+  .fase-t i{display:block;font-style:normal;font-size:.85rem;color:var(--muted);margin-top:.15rem}
+  .fase-body{padding:1rem 1.2rem 1.2rem}
+  .fase-body .row{margin:.85rem 0;color:var(--ink-2);font-size:.94rem}
+  .fase-body .row>span{display:block;font-size:.68rem;text-transform:uppercase;letter-spacing:.09em;
+     font-weight:700;color:var(--muted);margin-bottom:.2rem}
+  .done{background:var(--ok-soft);border-radius:8px;padding:.6rem .8rem;font-size:.9rem;color:var(--ink-2);margin-top:.3rem}
+  .done b{color:var(--ok)}
+
+  .flow{display:flex;flex-wrap:wrap;gap:.6rem;align-items:center;margin:1.2rem 0;
+     background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:1.1rem}
+  .node{background:var(--surface-2);border:1px solid var(--border-2);border-radius:9px;
+     padding:.55rem .85rem;font-size:.84rem;font-weight:600}
+  .node small{font-weight:400;color:var(--muted)}
+  .node.src{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+  .node.out{border-color:var(--teal);color:var(--teal);background:var(--teal-soft)}
+  .arrow{color:var(--muted);font-size:1.1rem}
+
+  .tw{overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius);margin:1rem 0;background:var(--surface)}
+  table{border-collapse:collapse;width:100%;min-width:540px;font-size:.88rem}
+  th,td{text-align:left;padding:.7rem .9rem;border-bottom:1px solid var(--border);vertical-align:top}
+  thead th{background:var(--surface-2);font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;
+     color:var(--muted);font-weight:700;white-space:nowrap}
+  tbody th{background:var(--surface-2);font-size:.78rem;color:var(--ink-2);white-space:nowrap}
+  tbody tr:last-child td{border-bottom:0}
+
+  .callout{border-radius:var(--radius);padding:.9rem 1.1rem;margin:1.1rem 0;font-size:.93rem;
+     border:1px solid var(--border-2);color:var(--ink-2)}
+  .callout b:first-child{display:block;margin-bottom:.2rem}
+  .callout.warn{background:var(--danger-soft)}
+  .callout.warn b:first-child{color:var(--danger)}
+  .callout.good{background:var(--ok-soft)}
+  .callout.good b:first-child{color:var(--ok)}
+  .callout.key{background:var(--accent-soft)}
+  .callout.key b:first-child{color:var(--accent)}
+
+  .src-g{display:grid;grid-template-columns:repeat(auto-fit,minmax(268px,1fr));gap:.8rem;margin:1rem 0}
+  .src{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:.9rem 1rem}
+  .src b{display:block;font-size:.95rem;font-family:var(--serif)}
+  .src p{font-size:.83rem;margin:.3rem 0 .5rem;color:var(--ink-2)}
+  .lic{font-size:.68rem;font-weight:700;padding:.15rem .5rem;border-radius:999px;
+     background:var(--ok-soft);color:var(--ok);display:inline-block;margin-bottom:.4rem}
+  .lic.bad{background:var(--danger-soft);color:var(--danger)}
+  .lic.mid{background:var(--accent-soft);color:var(--accent)}
+  .src-links{display:flex;flex-wrap:wrap;gap:.4rem .8rem;font-size:.8rem}
+
+  .codebox{position:relative;background:var(--surface);border:1px solid var(--border);
+     border-radius:10px;margin:.9rem 0;overflow:hidden}
+  .codebox .cb-h{display:flex;align-items:center;gap:.6rem;padding:.5rem .9rem;
+     background:var(--surface-2);border-bottom:1px solid var(--border);font-size:.78rem;font-weight:700;color:var(--ink-2)}
+  .codebox .cb-h .rid{font-family:var(--mono);color:var(--accent)}
+  .copybtn{margin-left:auto;background:var(--surface);border:1px solid var(--border-2);color:var(--ink-2);
+     border-radius:7px;padding:.2rem .6rem;font:inherit;font-size:.74rem;cursor:pointer}
+  .copybtn:hover{border-color:var(--accent);color:var(--accent)}
+  .codebox pre{margin:0;padding:.85rem 1rem;overflow-x:auto}
+  .codebox code{background:none;border:0;padding:0;font-size:.8rem;line-height:1.55;white-space:pre}
+
+  .gl{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:.7rem}
+  .gl div{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:.75rem .9rem}
+  .gl b{font-family:var(--serif);font-size:.96rem;color:var(--accent)}
+  .gl p{font-size:.83rem;margin:.25rem 0 0}
+  .gl em{display:block;font-style:normal;font-size:.74rem;color:var(--muted);margin-top:.3rem}
+
+  ul.tight{margin:.6rem 0;padding-left:1.15rem;color:var(--ink-2)}
+  ul.tight li{margin:.35rem 0}
+  .hidden{display:none !important}
+  footer{max-width:var(--maxw);margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px solid var(--border);
+     color:var(--muted);font-size:.82rem}
+  .noresult{padding:2rem;text-align:center;color:var(--muted)}
+  @media print{ .topbar,.sidenav,.tools{display:none} .shell{grid-template-columns:1fr} details.fase{page-break-inside:avoid} details.fase>summary{background:none} }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-in">
+    <div class="brand">Atlas <span>Urbano</span> · Paulo Afonso</div>
+    <div class="tools">
+      <input id="q" class="search" type="search" placeholder="Buscar no projeto…" aria-label="Buscar no projeto">
+      <button id="exp" class="iconbtn" type="button">Abrir tudo</button>
+      <button id="th" class="iconbtn" type="button">Tema</button>
+    </div>
+  </div>
+</div>
+
+<div class="shell">
+  <nav class="sidenav" id="nav" aria-label="Seções">
+    <div class="grp">Projeto</div>
+    <a href="#oque">O que é</a>
+    <a href="#porque">Por que dá para fazer</a>
+    <a href="#pipeline">Como se faz</a>
+    <div class="grp">Execução</div>
+    <a href="#fases">Fases do semestre</a>
+    <a href="#equipe">Equipe e rituais</a>
+    <div class="grp">Dados</div>
+    <a href="#fontes">Fontes</a>
+    <a href="#ferramentas">Ferramentas</a>
+    <a href="#receitas">Receitas principais</a>
+    <div class="grp">Qualidade</div>
+    <a href="#confianca">Confiança e campo</a>
+    <a href="#cuidados">Cuidados e ética</a>
+    <a href="#riscos">Riscos e planos B</a>
+    <a href="#resultados">Resultados esperados</a>
+    <div class="grp">Referência</div>
+    <a href="#glossario">Glossário</a>
+  </nav>
+
+  <main>
+    <header class="hero">
+      <div class="eyebrow">Projeto de extensão universitária</div>
+      <h1>Atlas Urbano de Paulo Afonso</h1>
+      <p class="sub">Mapear a cidade inteira — edificações, tamanhos, endereços e bairros — usando somente dados públicos e ferramentas gratuitas. Um semestre, uma equipe de estudantes, custo zero.</p>
+      <div class="chips">
+        <span class="chip blue">Paulo Afonso/BA</span>
+        <span class="chip">1 semestre</span>
+        <span class="chip">4–8 estudantes</span>
+        <span class="chip teal">dados abertos</span>
+        <span class="chip green">custo R$ 0</span>
+        <span class="chip">QGIS</span>
+      </div>
+    </header>
+
+    <section id="oque">
+      <div class="eyebrow">Identidade</div>
+      <h2>O que é</h2>
+      <p class="lead">O primeiro retrato <b>aberto e reprodutível</b> do território construído de Paulo Afonso: quantas edificações existem, de que tamanho, onde estão, quantos endereços há e de que tipo — publicado como mapa interativo, tabelas e relatório de método.</p>
+      <div class="grid2">
+        <div class="card bar-teal">
+          <div class="meta">O Atlas responde</div>
+          <ul class="tight" style="margin:0">
+            <li><b>Quantas edificações</b> existem na cidade, e onde?</li>
+            <li><b>De que tamanho</b> são os telhados, e como se distribuem?</li>
+            <li><b>Quantos endereços</b> há, e de que espécie (domicílios, estabelecimentos, em construção)?</li>
+            <li><b>Como cada bairro se compara</b> em densidade e tamanho típico?</li>
+            <li><b>O que os dados abertos não enxergam</b> — com que confiança se afirma cada número?</li>
+          </ul>
+        </div>
+        <div class="card bar-red">
+          <div class="meta">O que ele não é</div>
+          <p style="margin:0">Não é base oficial de nenhum órgão. O projeto <b>não</b> trata de terrenos ou limites de propriedade, <b>não</b> usa dados pessoais, <b>não</b> estima valor de nada e <b>não</b> fundamenta decisão administrativa. É retrato estatístico e material de aprendizagem.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="porque">
+      <div class="eyebrow">Viabilidade</div>
+      <h2>Por que dá para fazer — agora e de graça</h2>
+      <p>O Brasil publicou nos últimos anos um conjunto inédito de dados territoriais abertos. Quase nenhuma cidade média tem esse material <b>combinado, conferido e apresentado</b>. O que já existe pronto para baixar:</p>
+      <div class="stats">
+        <div class="stat"><div class="n">112.870</div><div class="l">habitantes em Paulo Afonso (Censo 2022) — código IBGE 2924009</div></div>
+        <div class="stat"><div class="n">106 mi</div><div class="l">endereços brasileiros georreferenciados no CNEFE, com CEP e espécie — grátis</div></div>
+        <div class="stat"><div class="n">2</div><div class="l">bases globais e abertas de edificações (Overture e Google Open Buildings)</div></div>
+        <div class="stat"><div class="n">13</div><div class="l">temas de estatísticas do Censo por setor e por bairro</div></div>
+      </div>
+      <div class="callout good">
+        <b>Calibração de expectativa — estudo piloto de referência</b>
+        Em um bairro da cidade (~1,75 km²), um estudo piloto com estas mesmas fontes encontrou ~1.100 edificações (640/km²), telhado mediano de 112 m² e <b>93% de associação automática endereço–edificação</b>. Para o município inteiro, a expectativa de planejamento é de 30–60 mil edificações — número que a Fase 2 confirma.
+      </div>
+      <div class="callout key">
+        <b>O CEP "dos Correios" sai de graça</b>
+        A base DNE dos Correios é paga — mas o CEP de cada endereço já vem no CNEFE do IBGE. É assim que o projeto atende "dados dos Correios" sem gastar um real.
+      </div>
+    </section>
+
+    <section id="pipeline">
+      <div class="eyebrow">Método</div>
+      <h2>Como se faz — pipeline em 5 passos</h2>
+      <div class="flow">
+        <span class="node src">Baixar<br><small>IBGE, Overture, Google</small></span>
+        <span class="arrow">→</span>
+        <span class="node">Limpar<br><small>UTF-8, recorte, ruído, m²</small></span>
+        <span class="arrow">→</span>
+        <span class="node">Cruzar<br><small>endereços × edificações</small></span>
+        <span class="arrow">→</span>
+        <span class="node">Agregar<br><small>estatísticas por bairro</small></span>
+        <span class="arrow">→</span>
+        <span class="node out">Publicar<br><small>mapa + tabelas + relatório</small></span>
+      </div>
+      <p>Cada passo tem receita pronta (comandos copiáveis) no cookbook <code>docs/RECEITAS.md</code> — as principais estão <a href="#receitas">logo abaixo</a>. A trilha principal é 100% visual (QGIS); quem programa tem a trilha opcional em Python/DuckDB.</p>
+    </section>
+
+    <section id="fases">
+      <div class="eyebrow">Execução</div>
+      <h2>Fases do semestre</h2>
+      <p>Sete fases em ~16 semanas. Cada uma fecha com um entregável e um critério de conclusão conferido pelo orientador. Clique para abrir.</p>
+
+      <details class="fase">
+        <summary><span class="fase-n">F0</span><span class="fase-t"><b>Ambientação e fundamentos</b><i>Semanas 1–2 · QGIS instalado, papéis definidos, "mapa zero"</i></span></summary>
+        <div class="fase-body">
+          <div class="row"><span>Atividades</span>Instalar QGIS LTR + plugins (QuickMapServices, qgis2web, DataPlotly); oficina interna de 2h sobre camadas e CRS; criar pastas e drive da equipe; adicionar o basemap de satélite; baixar a malha de setores da BA e dissolver o limite municipal (receitas R03 e R10).</div>
+          <div class="row"><span>Entregável</span>"Mapa zero": limite municipal e setores censitários sobre imagem de satélite.</div>
+          <div class="row"><span>Conclusão</span><div class="done"><b>Fase fechada quando</b> todos os integrantes reproduzem o mapa zero na própria máquina.</div></div>
+        </div>
+      </details>
+
+      <details class="fase">
+        <summary><span class="fase-n">F1</span><span class="fase-t"><b>Endereços (CNEFE)</b><i>Semanas 3–4 · todos os endereços da cidade + decisão do recorte territorial</i></span></summary>
+        <div class="fase-body">
+          <div class="row"><span>Atividades</span>Baixar o CNEFE do município e o dicionário (R01, R02); importar no QGIS (R09); mapa temático por espécie; contar endereços por setor. <b>Verificação decisiva</b>: a malha de bairros do IBGE cobre Paulo Afonso? (filtrar <code>CD_MUN = 2924009</code>, R04).</div>
+          <div class="row"><span>Plano B</span>Se o IBGE não tiver bairros do município: estatísticas por setor censitário + camada de rótulos com nomes de bairros de conhecimento local, sempre com a ressalva "delimitação não oficial".</div>
+          <div class="row"><span>Entregável</span>Camada <code>enderecos_cnefe</code> + tabela de endereços por espécie + decisão de recorte registrada.</div>
+          <div class="row"><span>Conclusão</span><div class="done"><b>Fase fechada quando</b> o total de endereços está documentado e o mapa por espécie foi apresentado na reunião.</div></div>
+        </div>
+      </details>
+
+      <details class="fase">
+        <summary><span class="fase-n">F2</span><span class="fase-t"><b>Edificações</b><i>Semanas 5–7 · duas fontes comparadas, uma escolhida, áreas calculadas</i></span></summary>
+        <div class="fase-body">
+          <div class="row"><span>Atividades</span>Baixar Overture (R06) e corrigir a codificação (R08); baixar Google Open Buildings v3 (R07; DuckDB R15 na trilha com código); <b>comparar as duas fontes em 2 bairros-teste</b> e escolher a primária com justificativa; recortar pelo limite (R11), remover ruído (&lt; 10 m²), calcular <code>area_m2</code> (R12); histograma (R16).</div>
+          <div class="row"><span>Entregável</span>Camada <code>edificacoes</code> com área + memória de comparação de fontes (1 página) + histograma.</div>
+          <div class="row"><span>Conclusão</span><div class="done"><b>Fase fechada quando</b> a contagem municipal está fechada e a mediana de área é plausível (referência do piloto: ~112 m²).</div></div>
+        </div>
+      </details>
+
+      <details class="fase">
+        <summary><span class="fase-n">F3</span><span class="fase-t"><b>Cruzamento e estatísticas</b><i>Semanas 8–10 · endereços × edificações, campos de confiança e tabela mestra</i></span></summary>
+        <div class="fase-body">
+          <div class="row"><span>Atividades</span>Junção espacial pelo vizinho mais próximo (R13), raio documentado (25–50 m), meta ≥ 85% de associação; investigar os não-associados (isso é resultado, não falha); <b>campos de confiança e fila de conferência</b> (R21, R22); tabela mestra por recorte (R14); conferência contra o Censo (R05); auditoria visual de 30 edificações por recorte (atualiza <code>nivel_verificacao</code>).</div>
+          <div class="row"><span>Entregável</span><code>atlas_pa.gpkg</code> consolidado + tabela mestra em CSV + fila de conferência.</div>
+          <div class="row"><span>Conclusão</span><div class="done"><b>Fase fechada quando</b> a auditoria amostral está documentada e a taxa de associação foi reportada com o raio utilizado.</div></div>
+        </div>
+      </details>
+
+      <details class="fase">
+        <summary><span class="fase-n">F4</span><span class="fase-t"><b>Mapa interativo</b><i>Semanas 11–13 · o Atlas navegável em qualquer navegador</i></span></summary>
+        <div class="fase-body">
+          <div class="row"><span>Atividades</span>Simbologia (coropleta de densidade, faixas de área, clusters de endereços); simplificação para a web (R19); export com qgis2web (R17) ou folium (R18); atribuições no rodapé (R20); teste de usabilidade com 3 pessoas de fora.</div>
+          <div class="row"><span>Entregável</span><code>mapa/index.html</code> abrindo offline.</div>
+          <div class="row"><span>Conclusão</span><div class="done"><b>Fase fechada quando</b> o mapa abre em máquina "limpa", com legenda, camadas ligáveis e créditos corretos, em menos de 60 MB (meta: 25 MB).</div></div>
+        </div>
+      </details>
+
+      <details class="fase">
+        <summary><span class="fase-n">F5</span><span class="fase-t"><b>Síntese e relatório</b><i>Semanas 14–15 · números finais com limitações explícitas</i></span></summary>
+        <div class="fase-body">
+          <div class="row"><span>Atividades</span>Redigir "o que estes números NÃO dizem"; banner/slides no padrão da instituição; consolidar o diário em relatório de extensão; empacotar dados + "como reproduzir".</div>
+          <div class="row"><span>Entregável</span>Relatório/banner + pacote de dados reprodutível.</div>
+          <div class="row"><span>Conclusão</span><div class="done"><b>Fase fechada quando</b> a revisão do orientador aprova e toda estatística publicada tem fonte, método e limitação.</div></div>
+        </div>
+      </details>
+
+      <details class="fase">
+        <summary><span class="fase-n">F6</span><span class="fase-t"><b>Apresentação e encerramento</b><i>Semana 16 · mostra de extensão + retrospectiva</i></span></summary>
+        <div class="fase-body">
+          <div class="row"><span>Atividades</span>Apresentação de ~15 min com o mapa ao vivo; retrospectiva (o que manter/mudar numa próxima edição); publicação do pacote no repositório institucional.</div>
+          <div class="row"><span>Conclusão</span><div class="done"><b>Projeto fechado quando</b> o material foi entregue à instituição e a retrospectiva está no diário.</div></div>
+        </div>
+      </details>
+
+      <div class="callout key">
+        <b>Entregável mínimo viável</b>
+        Se o semestre encurtar (provas, feriados, imprevistos): fechar a F3 + um mapa simples de uma camada + relatório enxuto. O projeto ainda "fecha" decente — as fases F4–F6 completas são o cenário ideal, não o único aceitável.
+      </div>
+    </section>
+
+    <section id="equipe">
+      <div class="eyebrow">Pessoas</div>
+      <h2>Equipe e rituais</h2>
+      <div class="tw">
+        <table>
+          <thead><tr><th>Papel</th><th>Qtde</th><th>Responsabilidade</th></tr></thead>
+          <tbody>
+            <tr><td><b>Coordenação</b></td><td>1</td><td>Cronograma, atas, diário de bordo, interface com o orientador</td></tr>
+            <tr><td><b>Dados e downloads</b></td><td>1–2</td><td>Aquisição, organização de pastas, espelho/backup das bases</td></tr>
+            <tr><td><b>SIG (QGIS)</b></td><td>2</td><td>Limpeza, recortes, junções espaciais, cartografia</td></tr>
+            <tr><td><b>Análise</b></td><td>1–2</td><td>Tabelas, estatísticas, validação amostral, conferência com o Censo</td></tr>
+            <tr><td><b>Comunicação</b></td><td>1</td><td>Mapa web, banner, texto final, apresentação</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Com 4 pessoas, fundir <b>Dados+Análise</b> e <b>SIG+Comunicação</b> em pares. Rodízio opcional na metade do semestre — as receitas numeradas garantem que qualquer um retome o passo do colega.</p>
+      <ul class="tight">
+        <li><b>Reunião semanal de 1h</b> com pauta fixa: feito · travado · próximo.</li>
+        <li><b>Diário de bordo</b> semanal (modelo em <code>docs/DIARIO-MODELO.md</code>) — vira o relatório final quase de graça.</li>
+        <li><b>Revisão de fase</b>: nenhuma fase fecha sem o critério de conclusão conferido.</li>
+        <li><b>Calendário reverso</b>: banner pronto 2 semanas antes do evento de extensão.</li>
+      </ul>
+    </section>
+
+    <section id="fontes">
+      <div class="eyebrow">Dados</div>
+      <h2>Fontes — todas gratuitas, todas verificadas</h2>
+      <p>URLs completas e fichas detalhadas em <code>docs/FONTES.md</code> (verificadas em 02/08/2026).</p>
+      <div class="src-g">
+        <div class="src">
+          <span class="lic">Público</span>
+          <b>CNEFE — Censo 2022 (IBGE)</b>
+          <p>Todos os endereços do município, <b>100% georreferenciados</b>, com setor, quadra, face, <b>CEP</b> e <b>espécie</b> (domicílio, estabelecimento, em construção). Zip de 1,7 MB, direto do FTP do IBGE.</p>
+        </div>
+        <div class="src">
+          <span class="lic">Público</span>
+          <b>Malhas territoriais 2022 (IBGE)</b>
+          <p>Polígonos oficiais de <b>setores censitários</b> (recorte garantido) e de <b>bairros</b> — estes só para municípios que os informaram; cobertura de Paulo Afonso é verificação da F1, com plano B pronto.</p>
+        </div>
+        <div class="src">
+          <span class="lic">Público</span>
+          <b>Agregados do Censo 2022 (IBGE)</b>
+          <p>Estatísticas por setor e por bairro em 13 temas (domicílios, moradores…) — a régua oficial contra a qual o Atlas se confere.</p>
+        </div>
+        <div class="src">
+          <span class="lic mid">ODbL</span>
+          <b>Overture Maps — buildings</b>
+          <p>Polígonos de edificações por bbox via CLI. Contém OSM: atribuir e manter derivados abertos. No Windows pt-BR, corrigir a codificação (receita R08).</p>
+        </div>
+        <div class="src">
+          <span class="lic">CC BY 4.0 / ODbL</span>
+          <b>Google Open Buildings v3</b>
+          <p>Edificações detectadas por IA, com área e <b>grau de confiança</b> por polígono. Download direto, sem cadastro. O CSV da célula é grande — filtrar por bbox antes de abrir (R15).</p>
+        </div>
+        <div class="src">
+          <span class="lic">CC BY 4.0 / ODbL</span>
+          <b>Open Buildings 2.5D Temporal</b>
+          <p>Trilha avançada opcional: rasters anuais 2016–2023 com <b>altura</b> (~4 m efetivos) — distingue térreo de sobrado. Nenhum entregável depende dele.</p>
+        </div>
+        <div class="src">
+          <span class="lic mid">Basemap</span>
+          <b>Esri World Imagery</b>
+          <p>Fundo de satélite para conferência visual e auditoria amostral, com atribuição. Não é fonte de dados a vetorizar.</p>
+        </div>
+        <div class="src">
+          <span class="lic mid">ODbL</span>
+          <b>OpenStreetMap</b>
+          <p>Vias e nomes de logradouros como apoio e rotulagem. Atribuir "© OpenStreetMap contributors".</p>
+        </div>
+      </div>
+      <div class="callout warn">
+        <b>Fontes proibidas ou restritas</b>
+        <b>Google Maps/Street View</b>: os Termos de Serviço vedam traçar contornos, extrair informação e baixar em massa — inutilizável como fonte (não confundir com o Open Buildings, que é do Google Research sob licença aberta). <b>DNE dos Correios</b>: base paga — o CEP já vem no CNEFE. <b>Mapillary</b>: licença share-alike viral — preferir fotos próprias. <b>Google Earth Engine</b>: exige cadastro e é desnecessário.
+      </div>
+    </section>
+
+    <section id="ferramentas">
+      <div class="eyebrow">Ferramentas</div>
+      <h2>Duas trilhas, ambas gratuitas</h2>
+      <div class="grid2">
+        <div class="card bar">
+          <div class="meta">Trilha principal — sem código</div>
+          <h4>QGIS LTR</h4>
+          <p>Cobre o pipeline inteiro em interface gráfica: importar CSV com coordenadas, filtrar, dissolver, recortar, junção espacial, estatísticas por polígono, simbologia e export do mapa web.</p>
+          <p style="font-size:.85rem"><b>Plugins</b>: QuickMapServices (basemaps) · qgis2web (mapa Leaflet) · DataPlotly (histogramas).</p>
+        </div>
+        <div class="card bar-teal">
+          <div class="meta">Trilha opcional — com código</div>
+          <h4>Python + DuckDB</h4>
+          <p>Para quem programa: <code>overturemaps</code> (download por bbox), <b>DuckDB</b> com extensão spatial (filtrar CSVs de gigabytes sem estourar a RAM), <b>folium</b> (mapa em ~10 linhas).</p>
+          <p style="font-size:.85rem">Caminho de crescimento — nunca pré-requisito: cada operação da trilha visual tem equivalente aqui.</p>
+        </div>
+      </div>
+      <p><b>Apoio</b>: LibreOffice/Excel (dicionários e tabelas) · navegador (mapa final) · 7-Zip. <b>Fora</b>: ArcGIS (pago), Earth Engine (cadastro), Google Maps como fonte (vedado).</p>
+    </section>
+
+    <section id="receitas">
+      <div class="eyebrow">Cookbook</div>
+      <h2>Receitas principais</h2>
+      <p>As 22 receitas completas (objetivo → passos → saída esperada → erros comuns) estão em <code>docs/RECEITAS.md</code>. As mais usadas, prontas para copiar:</p>
+
+      <div class="codebox">
+        <div class="cb-h"><span class="rid">R01</span> Baixar todos os endereços do município (CNEFE/IBGE) <button class="copybtn" type="button">Copiar</button></div>
+        <pre><code>curl -L -o dados-brutos/2924009_PAULO_AFONSO.zip "https://ftp.ibge.gov.br/Cadastro_Nacional_de_Enderecos_para_Fins_Estatisticos/Censo_Demografico_2022/Arquivos_CNEFE/CSV/Municipio/29_BA/2924009_PAULO_AFONSO.zip"</code></pre>
+      </div>
+
+      <div class="codebox">
+        <div class="cb-h"><span class="rid">R06 + R08</span> Baixar edificações (Overture) e corrigir a codificação no Windows pt-BR <button class="copybtn" type="button">Copiar</button></div>
+        <pre><code>pip install overturemaps
+overturemaps download --bbox=-38.35,-9.55,-38.05,-9.30 -f geojson --type=building -o dados-brutos/edificacoes_overture.geojson
+python -c "open('dados-processados/edificacoes_overture_utf8.geojson','w',encoding='utf-8').write(open('dados-brutos/edificacoes_overture.geojson',encoding='cp1252').read())"</code></pre>
+      </div>
+
+      <div class="codebox">
+        <div class="cb-h"><span class="rid">R15</span> Filtrar o CSV gigante do Google Open Buildings com DuckDB <button class="copybtn" type="button">Copiar</button></div>
+        <pre><code>INSTALL spatial; LOAD spatial;
+CREATE TABLE ed AS
+  SELECT * FROM read_csv_auto('dados-brutos/CELULA_buildings.csv.gz')
+  WHERE longitude BETWEEN -38.35 AND -38.05
+    AND latitude  BETWEEN  -9.55 AND  -9.30;
+COPY (SELECT latitude, longitude, area_in_meters, confidence,
+             ST_GeomFromText(geometry) AS geom
+      FROM ed)
+TO 'dados-processados/edificacoes_google.geojson'
+WITH (FORMAT GDAL, DRIVER 'GeoJSON');</code></pre>
+      </div>
+
+      <div class="codebox">
+        <div class="cb-h"><span class="rid">R18</span> Mapa interativo em Python (folium) <button class="copybtn" type="button">Copiar</button></div>
+        <pre><code># pip install folium
+import folium
+m = folium.Map(location=[-9.40, -38.22], zoom_start=13, tiles=None)
+folium.TileLayer(
+    tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    attr="Esri, Maxar, Earthstar Geographics", name="Satélite").add_to(m)
+folium.GeoJson("dados-processados/edificacoes.geojson", name="Edificações").add_to(m)
+folium.LayerControl().add_to(m)
+m.save("mapa/index.html")</code></pre>
+      </div>
+
+      <p style="font-size:.88rem">⚠️ Os bboxes acima são <b>aproximados</b> (núcleo urbano). O bbox real sai do limite municipal no QGIS: camada <code>limite_municipal</code> → Propriedades → Informação → Extensão (receita R10). A junção espacial (R13) e o export qgis2web (R17) são operações de menu no QGIS — e os campos de confiança com a fila de conferência nascem nas receitas R21 e R22. Passos completos no cookbook.</p>
+    </section>
+
+    <section id="confianca">
+      <div class="eyebrow">Confiança</div>
+      <h2>Quanto dá para confiar — e o que conferir in loco</h2>
+      <p class="lead">Certeza absoluta não existe em dado gratuito de satélite. O que o Atlas entrega é <b>confiança quantificada por edificação</b> — e uma fila objetiva de onde a visita de campo vale a pena.</p>
+      <div class="tw">
+        <table>
+          <thead><tr><th>Campo</th><th>O que guarda</th><th>De onde vem</th></tr></thead>
+          <tbody>
+            <tr><td><code>confianca_fonte</code></td><td>Confiança do detector (0–1)</td><td>Coluna <code>confidence</code> do Google v3 — grátis, por polígono</td></tr>
+            <tr><td><code>concordancia_fontes</code></td><td><code>concordam</code> · <code>divergem</code> · <code>so_uma_fonte</code></td><td>Sobreposição Overture × Google (R21) — dois detectores independentes concordando é o sinal mais forte disponível de graça</td></tr>
+            <tr><td><code>nivel_verificacao</code></td><td>Quem já olhou (escada abaixo)</td><td>Auditoria de tela da F3 e visitas de campo</td></tr>
+            <tr><td><code>prioridade_campo</code></td><td>Score de sinais de alerta → fila de conferência</td><td>Calculadora de campo (R22)</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="flow">
+        <span class="node">automatico<br><small>veio da fonte — ninguém olhou</small></span>
+        <span class="arrow">→</span>
+        <span class="node">conferido_tela<br><small>auditada contra o satélite</small></span>
+        <span class="arrow">→</span>
+        <span class="node out">conferido_campo<br><small>visitada, com foto — o único degrau com certeza</small></span>
+      </div>
+      <div class="callout key">
+        <b>O dado gratuito ordena; o campo afirma</b>
+        Sobem na fila: fontes discordando, confiança baixa (&lt; 0,75), polígono anômalo (&gt; 600 m² ou &lt; 15 m²), edificação sem endereço associado e endereço "em construção" no CNEFE. Na visita, anotar <code>pavimentos_observados</code> permite estimar a área construída (pegada × pavimentos) — sempre rotulada como estimativa.
+      </div>
+    </section>
+
+    <section id="cuidados">
+      <div class="eyebrow">Ética e método</div>
+      <h2>Cuidados e ética</h2>
+      <div class="callout warn">
+        <b>O que estes números NÃO dizem</b>
+        <b>Pegada de telhado ≠ área construída</b> (área construída soma pavimentos — NBR 12721; o projeto mede telhado). <b>Footprint ≠ terreno</b>: polígono de edificação não indica limite nem propriedade. <b>Detecção automática tem teto</b>: usar o campo de confiança e reportar incerteza. <b>O CNEFE é um retrato de 2022</b>: construções posteriores não aparecem. <b>A associação endereço–edificação é heurística</b>: reportar sempre a taxa e o raio.
+      </div>
+      <div class="callout key">
+        <b>Privacidade</b>
+        Só dados públicos e agregados. O CNEFE público não traz nomes de moradores — e o projeto não coleta dados de pessoas. Em fotos de campo: sem rostos, sem placas de veículos. Nenhum endereço individual é destacado nos produtos finais.
+      </div>
+      <div class="callout good">
+        <b>Regra de publicação</b>
+        Todo mapa, tabela ou slide sai com: linha de atribuição completa (pronta em <code>docs/FONTES.md</code>) · licença declarada · nota "telhado ≠ área construída" · taxa e raio da associação · data dos dados. Checklist completo na receita R20. Licença sugerida para o material da equipe: <b>CC BY 4.0</b>.
+      </div>
+      <div class="callout key">
+        <b>Mediana, não média</b>
+        A distribuição de tamanhos tem cauda longa (galpões, escolas, indústrias): a média engana, a mediana descreve. O Atlas reporta medianas.
+      </div>
+    </section>
+
+    <section id="riscos">
+      <div class="eyebrow">Estado</div>
+      <h2>Riscos e planos B</h2>
+      <div class="tw">
+        <table>
+          <thead><tr><th>Risco</th><th>Sinal</th><th>Plano B</th></tr></thead>
+          <tbody>
+            <tr><td><b>Bairros IBGE não cobrem o município</b></td><td>Filtro <code>CD_MUN = 2924009</code> vazio (F1)</td><td>Recorte por setores + rótulos locais com ressalva "delimitação não oficial"</td></tr>
+            <tr><td><b>FTP do IBGE instável</b></td><td>Timeout nos downloads</td><td>Baixar tudo nas 2 primeiras fases e espelhar no drive da equipe</td></tr>
+            <tr><td><b>CSV do Google grande demais</b></td><td>Máquinas travam</td><td>DuckDB (R15), laboratório da instituição, espelho GeoParquet comunitário</td></tr>
+            <tr><td><b>Fontes de edificações divergem</b></td><td>Contagens muito diferentes nos bairros-teste</td><td>A comparação formal da F2 decide — e a divergência vira achado do relatório</td></tr>
+            <tr><td><b>Mapa web pesado</b></td><td>&gt; 60 MB ou navegador trava</td><td>Simplificação agressiva (R19): centroides em zoom baixo, clusters, menos casas decimais</td></tr>
+            <tr><td><b>Semestre encurtar</b></td><td>Atraso ≥ 2 semanas</td><td>Entregável mínimo viável: F3 + mapa simples + relatório enxuto</td></tr>
+            <tr><td><b>Evasão de integrantes</b></td><td>Papel descoberto</td><td>Papéis com backup + receitas autossuficientes: qualquer um retoma o passo do colega</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="resultados">
+      <div class="eyebrow">Entrega</div>
+      <h2>Resultados esperados</h2>
+      <div class="grid2">
+        <div class="card bar-teal"><div class="meta">Dados</div><b>atlas_pa.gpkg</b><p style="margin:.3rem 0 0">GeoPackage consolidado com todas as camadas padronizadas + tabelas CSV (tabela mestra por recorte; endereços por espécie).</p></div>
+        <div class="card bar-teal"><div class="meta">Mapa</div><b>mapa/index.html</b><p style="margin:.3rem 0 0">Mapa interativo navegável offline: coropleta de densidade, edificações por faixa de tamanho, endereços clusterizados.</p></div>
+        <div class="card bar"><div class="meta">Academia</div><b>Banner + relatório de extensão</b><p style="margin:.3rem 0 0">No padrão da instituição, alimentados pelo diário de bordo, com a seção de limitações.</p></div>
+        <div class="card bar"><div class="meta">Método</div><b>Pacote reprodutível</b><p style="margin:.3rem 0 0">"Como reproduzir": a lista de receitas usadas, na ordem — qualquer pessoa refaz e atualiza o Atlas no futuro.</p></div>
+      </div>
+      <ul class="tight">
+        <li>Cobertura de 100% do perímetro urbano.</li>
+        <li>Associação endereço–edificação ≥ 85%, com raio documentado.</li>
+        <li>Auditoria visual amostral (≥ 30 edificações por recorte) registrada.</li>
+        <li>Campos de confiança em 100% das edificações + fila de conferência de campo priorizada.</li>
+        <li>Toda estatística com fonte, método e limitação.</li>
+      </ul>
+    </section>
+
+    <section id="glossario">
+      <div class="eyebrow">Vocabulário</div>
+      <h2>Glossário</h2>
+      <p>Os termos completos, com convenções da equipe, estão em <code>CONTEXT.md</code>.</p>
+      <div class="gl">
+        <div><b>Edificação</b><p>Objeto físico construído — casa, prédio, galpão. O que as imagens veem e o projeto inventaria.</p></div>
+        <div><b>Pegada de telhado</b><p>Polígono da cobertura vista de cima. Indício de ocupação; a medida do projeto.</p><em>Evitar: "área do imóvel"</em></div>
+        <div><b>Área construída</b><p>Soma dos pavimentos (NBR 12721). Não observável de cima — o projeto NÃO a mede.</p></div>
+        <div><b>Endereço</b><p>Ponto do CNEFE com logradouro, CEP e espécie. Um prédio: 1 telhado, N endereços.</p></div>
+        <div><b>Espécie</b><p>Tipo do endereço no Censo: domicílio, estabelecimento, edificação em construção…</p></div>
+        <div><b>Setor censitário</b><p>Menor unidade de coleta do IBGE. O recorte garantido — sempre existe.</p></div>
+        <div><b>Bairro</b><p>Recorte de uso local; o IBGE só publica onde o município delimitou formalmente.</p></div>
+        <div><b>CEP</b><p>Vem de graça no CNEFE — a base paga dos Correios (DNE) não é necessária.</p></div>
+        <div><b>Junção espacial</b><p>Relacionar camadas pela posição ("qual endereço está mais perto desta edificação?").</p></div>
+        <div><b>Bbox</b><p>Retângulo W,S,E,N para recortar downloads. Os dos exemplos são aproximados.</p></div>
+        <div><b>CRS</b><p>EPSG:4674 para armazenar; EPSG:31984 (UTM 24S) para medir área.</p></div>
+        <div><b>GeoPackage</b><p>Arquivo único com várias camadas vetoriais — o formato de trabalho do projeto.</p></div>
+        <div><b>Basemap</b><p>Fundo visual (satélite) para conferência — nunca fonte de dados a vetorizar.</p></div>
+        <div><b>ODbL / CC BY</b><p>Licenças abertas com atribuição obrigatória; ODbL pede derivados abertos.</p></div>
+      </div>
+    </section>
+
+    <div id="noresult" class="noresult hidden">Nenhum trecho corresponde à busca.</div>
+  </main>
+</div>
+
+<footer>
+  <b>Atlas Urbano de Paulo Afonso</b> — projeto de extensão universitária · documento de concepção gerado em 02/08/2026.<br>
+  Documentos de referência na pasta do projeto: <code>CONTEXT.md</code> (glossário e convenções) e <code>docs/</code> (concepção, plano de fases, fontes, receitas, diário-modelo).<br>
+  Fontes: IBGE — Censo Demográfico 2022 (CNEFE, malhas territoriais e agregados); Overture Maps Foundation / © OpenStreetMap contributors (ODbL); Google Research — Open Buildings v3 (CC BY 4.0); basemap Esri, Maxar, Earthstar Geographics.<br>
+  Licença sugerida deste material: CC BY 4.0.
+</footer>
+
+<script>
+(function(){
+  "use strict";
+
+  var root = document.documentElement;
+  var btn = document.getElementById('th');
+  function current(){
+    var set = root.getAttribute('data-theme');
+    if (set) return set;
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  btn.addEventListener('click', function(){
+    root.setAttribute('data-theme', current() === 'dark' ? 'light' : 'dark');
+  });
+
+  var expBtn = document.getElementById('exp');
+  var allOpen = false;
+  expBtn.addEventListener('click', function(){
+    allOpen = !allOpen;
+    var ds = document.querySelectorAll('details.fase');
+    for (var i = 0; i < ds.length; i++) ds[i].open = allOpen;
+    expBtn.textContent = allOpen ? 'Fechar tudo' : 'Abrir tudo';
+  });
+
+  var copies = document.querySelectorAll('.copybtn');
+  for (var c = 0; c < copies.length; c++) {
+    copies[c].addEventListener('click', function(){
+      var box = this.closest('.codebox');
+      var code = box ? box.querySelector('code') : null;
+      if (!code) return;
+      var texto = code.textContent;
+      var self = this;
+      function ok(){ self.textContent = 'Copiado!'; setTimeout(function(){ self.textContent = 'Copiar'; }, 1600); }
+      function selecionar(el){
+        var r = document.createRange(); r.selectNodeContents(el);
+        var s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(texto).then(ok, function(){ selecionar(code); });
+      } else {
+        selecionar(code);
+      }
+    });
+  }
+
+  var links = Array.prototype.slice.call(document.querySelectorAll('#nav a'));
+  var byId = {};
+  links.forEach(function(a){ byId[a.getAttribute('href').slice(1)] = a; });
+  var sections = Array.prototype.slice.call(document.querySelectorAll('main section'));
+
+  if ('IntersectionObserver' in window) {
+    var obs = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){
+        if (!e.isIntersecting) return;
+        var a = byId[e.target.id];
+        if (!a) return;
+        links.forEach(function(l){ l.classList.remove('active'); });
+        a.classList.add('active');
+      });
+    }, { rootMargin: '-84px 0px -70% 0px', threshold: 0 });
+    sections.forEach(function(s){ obs.observe(s); });
+  }
+
+  var q = document.getElementById('q');
+  var none = document.getElementById('noresult');
+  var blocks = sections.map(function(s){
+    var kids = Array.prototype.slice.call(s.children).filter(function(el){
+      return el.tagName !== 'H2' && !el.classList.contains('eyebrow');
+    });
+    return { sec: s, kids: kids, title: s.textContent.slice(0, 120).toLowerCase() };
+  });
+
+  function reset(){
+    blocks.forEach(function(b){
+      b.sec.classList.remove('hidden');
+      b.kids.forEach(function(k){ k.classList.remove('hidden'); });
+    });
+    none.classList.add('hidden');
+  }
+
+  var timer;
+  q.addEventListener('input', function(){
+    clearTimeout(timer);
+    timer = setTimeout(function(){
+      var term = q.value.trim().toLowerCase();
+      if (term.length < 2) { reset(); return; }
+      var hits = 0;
+      blocks.forEach(function(b){
+        var secHit = b.title.indexOf(term) > -1;
+        b.kids.forEach(function(k){
+          var match = k.textContent.toLowerCase().indexOf(term) > -1;
+          k.classList.toggle('hidden', !match);
+          if (match) secHit = true;
+        });
+        b.sec.classList.toggle('hidden', !secHit);
+        if (secHit) hits++;
+      });
+      none.classList.toggle('hidden', hits > 0);
+    }, 140);
+  });
+})();
+</script>
+</body>
+</html>
