@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Importa edificações (Overture) e endereços (QG/CNEFE) para o MySQL."""
+"""Importa edificações (Overture) e endereços (QG/CNEFE) para o MySQL:
+uma linha por endereço, mais os prédios sem nenhum endereço."""
 
 import json
 import math
+from collections import Counter
 
 import pymysql
 
@@ -25,6 +27,9 @@ DB_NAME = "atlas_urbano"
 
 # ~6 m de tolerância na borda (ex.: porta na fachada).
 POINT_TOLERANCE_DEG = 0.00006
+
+# Raio do círculo usado para endereços sem prédio (~10 m).
+POINT_BUFFER_DEG = 0.00009
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS buildings (
@@ -149,24 +154,6 @@ def relate_points_to_buildings(buildings, points):
     return building_to_points, polys
 
 
-def pick_preferred_point(qg_indices, points):
-    def score(qi):
-        p = points[qi]["properties"]
-        has_estab = bool(p.get("DSC_ESTABELECIMENTO"))
-        has_addr = bool(p.get("LOGRAD_NUM"))
-        especie = p.get("COD_ESPECIE")
-        is_home = especie == "1"
-        if has_estab and not is_home:
-            return 3
-        if has_estab:
-            return 2
-        if has_addr:
-            return 1
-        return 0
-
-    return max(qg_indices, key=score)
-
-
 def main():
     print("Lendo edificações do Overture...")
     building_features = load_buildings()
@@ -178,9 +165,10 @@ def main():
 
     print("Relacionando endereços x prédios (espacialmente)...")
     building_to_points, polys = relate_points_to_buildings(building_features, qg_features)
-    matched_buildings = len(building_to_points)
-    print(f"  {matched_buildings} prédios receberam endereço "
-          f"({100 * matched_buildings / max(len(building_features), 1):.1f}%)")
+    point_to_building = {
+        qi: bi for bi, qis in building_to_points.items() for qi in qis
+    }
+    print(f"  {len(point_to_building)} endereços dentro de prédios")
 
     print("Gravando no MySQL...")
     conn = connect_db()
@@ -189,28 +177,51 @@ def main():
             cur.execute("DROP TABLE IF EXISTS buildings")
             cur.execute(SCHEMA)
 
+            codes = [str(q["properties"].get("COD_UNICO_ENDERECO")) for q in qg_features]
+            dupes = {c for c, n in Counter(codes).items() if n > 1}
+            seen = Counter()
+
+            def row_id(code):
+                if code not in dupes:
+                    return code
+                seen[code] += 1
+                return f"{code}#{seen[code]}"
+
+            def fonte_of(props):
+                sources = props.get("sources") or []
+                return "; ".join(dict(s).get("dataset", "?") for s in sources) or None
+
             batch = []
+            for qi, qf in enumerate(qg_features):
+                qp = qf["properties"]
+                bi = point_to_building.get(qi)
+                if bi is not None:
+                    oprops = building_features[bi]["properties"]
+                    geom = polys[bi]
+                    num_pav = oprops.get("num_floors")
+                    fonte = fonte_of(oprops)
+                else:
+                    oprops = {}
+                    x, y = qf["geometry"]["coordinates"]
+                    geom = Point(x, y).buffer(POINT_BUFFER_DEG)
+                    num_pav = None
+                    fonte = "QG/CNEFE"
+                batch.append((
+                    row_id(codes[qi]), json.dumps(mapping(geom)), _area_m2(geom),
+                    best_type(qp, oprops),
+                    qp.get("LOGRAD_NUM") or None, qp.get("DSC_LOCALIDADE") or None,
+                    qp.get("DSC_ESTABELECIMENTO") or None, num_pav, fonte,
+                ))
+
             for bi, b in enumerate(building_features):
+                if bi in building_to_points:
+                    continue
                 props = b["properties"]
                 geom = polys[bi]
-
-                qg_props = None
-                if bi in building_to_points:
-                    preferred = pick_preferred_point(building_to_points[bi], qg_features)
-                    qg_props = qg_features[preferred]["properties"]
-
-                endereco = (qg_props or {}).get("LOGRAD_NUM") or None
-                bairro = (qg_props or {}).get("DSC_LOCALIDADE") or None
-                estabelecimento = (qg_props or {}).get("DSC_ESTABELECIMENTO") or None
-                num_pav = props.get("num_floors")
-                tipo = best_type(qg_props, props)
-
-                sources = props.get("sources") or []
-                fonte = "; ".join(dict(s).get("dataset", "?") for s in sources) or None
-
                 batch.append((
                     b["id"], json.dumps(mapping(geom)), _area_m2(geom),
-                    tipo, endereco, bairro, estabelecimento, num_pav, fonte,
+                    best_type(None, props),
+                    None, None, None, props.get("num_floors"), fonte_of(props),
                 ))
 
             # SRID 0 em toda a tabela (tudo em lon/lat).

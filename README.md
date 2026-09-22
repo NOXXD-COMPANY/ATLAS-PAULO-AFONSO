@@ -21,11 +21,14 @@ dados reais (Overture + QG/CNEFE)
 | `overture-...-building-*.geojson`| Polígono real de cada edificação (8.382)        |
 | `qg_810_endereco_*.json`         | Endereços/estabelecimentos (61.965 pontos QG)   |
 
-O tipo de uso é derivado do **código de espécie** do QG (IBGE/CNEFE)
-(`1`=residencial, `2`=hospedagem, `3`=agropecuário, `4`=institucional,
-`5`=serviço, `6`=comercial, `7`=misto, `8`=religioso). Prédio sem informação
-→ `desconhecido`. A relação prédio↔endereço é espacial: um ponto de endereço é
-associado ao prédio que o contém (com ~6 m de tolerância na borda).
+A tabela `buildings` tem uma linha por endereço QG (61.965) mais os
+prédios Overture sem nenhum endereço (3.677), totalizando 65.642
+edificações. Endereço dentro de um prédio usa o polígono dele (relação
+espacial com ~6 m de tolerância na borda); endereço sem prédio vira um
+círculo de ~10 m ao redor do ponto. O tipo de uso vem do **código de
+espécie** do QG (`1`=residencial, `2`=hospedagem, `3`=agropecuário,
+`4`=institucional, `5`=serviço, `6`=comercial, `7`=misto, `8`=religioso);
+sem informação → `desconhecido`.
 
 ## Como rodar
 
