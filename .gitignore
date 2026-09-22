@@ -1,0 +1,16 @@
+# OS
+.DS_Store
+*.log
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Dados locais (mesmo assim é um protótipo local)
+.mysql-data/
+data/raw/
+
+# Node
+frontend/node_modules/
+frontend/dist/
