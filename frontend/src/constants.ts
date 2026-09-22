@@ -26,3 +26,5 @@ export function corDoTipo(tipo: unknown): [number, number, number, number] {
   const t = typeof tipo === 'string' ? tipo : 'desconhecido';
   return TIPO_CORES[t] ?? TIPO_CORES.desconhecido;
 }
+
+export const FONTE_PONTO = 'QG/CNEFE';

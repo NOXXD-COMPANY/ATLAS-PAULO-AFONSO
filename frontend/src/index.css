@@ -49,6 +49,14 @@ body,
   border: 1px solid rgba(0, 0, 0, 0.2);
 }
 
+.legend-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  cursor: pointer;
+}
+
 /* Painel lateral de informações */
 .info-panel {
   position: absolute;

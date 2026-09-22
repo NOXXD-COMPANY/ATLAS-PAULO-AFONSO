@@ -8,7 +8,7 @@ import type {
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { MapboxOverlay } from '@deck.gl/mapbox';
 import { GeoJsonLayer } from '@deck.gl/layers';
-import { TIPOS_ORDEM, corDoTipo } from './constants';
+import { TIPOS_ORDEM, corDoTipo, FONTE_PONTO } from './constants';
 
 interface BuildingProps {
   id: string;
@@ -80,6 +80,7 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showPontos, setShowPontos] = useState(true);
 
   useEffect(() => {
     if (!mapContainer.current) return;
@@ -151,18 +152,29 @@ export default function App() {
     );
   }, [data]);
 
+  const visibleData = useMemo<GeoJsonFC | null>(() => {
+    if (!data) return null;
+    if (showPontos) return data;
+    return {
+      type: 'FeatureCollection',
+      features: data.features.filter(
+        (f) => f.properties['fonte'] !== FONTE_PONTO,
+      ),
+    };
+  }, [data, showPontos]);
+
   const selectedFeature = useMemo<GeoJsonFeature | null>(() => {
-    if (!selectedId || !data) return null;
-    return data.features.find(
+    if (!selectedId || !visibleData) return null;
+    return visibleData.features.find(
       (f) => String(f.properties['id']) === selectedId,
     ) ?? null;
-  }, [selectedId, data]);
+  }, [selectedId, visibleData]);
 
   const layers = useMemo(() => {
     const buildings = new GeoJsonLayer({
       id: 'buildings',
       // `as any`: o tipo local é compatível com o esperado pelo deck.gl.
-      data: (data ?? { type: 'FeatureCollection', features: [] }) as any,
+      data: (visibleData ?? { type: 'FeatureCollection', features: [] }) as any,
       pickable: true,
       stroked: true,
       filled: true,
@@ -186,7 +198,7 @@ export default function App() {
     });
 
     return [buildings, highlight];
-  }, [data, selectedFeature]);
+  }, [visibleData, selectedFeature]);
 
   useEffect(() => {
     overlayRef.current?.setProps({ layers });
@@ -194,16 +206,16 @@ export default function App() {
 
   const legenda = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const f of data?.features ?? []) {
+    for (const f of visibleData?.features ?? []) {
       const t = String(f.properties['tipo'] ?? 'desconhecido');
       counts.set(t, (counts.get(t) ?? 0) + 1);
     }
     return TIPOS_ORDEM.map((t) => ({ tipo: t, n: counts.get(t) ?? 0 })).filter(
       (x) => x.n > 0,
     );
-  }, [data]);
+  }, [visibleData]);
 
-  const total = data?.features.length ?? 0;
+  const total = visibleData?.features.length ?? 0;
 
   const closePanel = useCallback(() => setSelectedId(null), []);
 
@@ -253,6 +265,14 @@ export default function App() {
       {legenda.length > 0 && (
         <div className="legend">
           <h4>Uso da edificação ({total.toLocaleString('pt-BR')})</h4>
+          <label className="legend-toggle">
+            <input
+              type="checkbox"
+              checked={showPontos}
+              onChange={(e) => setShowPontos(e.target.checked)}
+            />
+            Endereços sem prédio
+          </label>
           {legenda.map(({ tipo, n }) => (
             <div key={tipo} className="legend-item">
               <span

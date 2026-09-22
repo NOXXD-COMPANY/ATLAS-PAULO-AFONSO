@@ -25,7 +25,8 @@ A tabela `buildings` tem uma linha por endereço QG (61.965) mais os
 prédios Overture sem nenhum endereço (3.677), totalizando 65.642
 edificações. Endereço dentro de um prédio usa o polígono dele (relação
 espacial com ~6 m de tolerância na borda); endereço sem prédio vira um
-círculo de ~10 m ao redor do ponto. O tipo de uso vem do **código de
+círculo de ~5 m ao redor do ponto. No mapa, a caixa de legenda tem um
+checkbox para mostrar ou ocultar esses endereços sem prédio. O tipo de uso vem do **código de
 espécie** do QG (`1`=residencial, `2`=hospedagem, `3`=agropecuário,
 `4`=institucional, `5`=serviço, `6`=comercial, `7`=misto, `8`=religioso);
 sem informação → `desconhecido`.
