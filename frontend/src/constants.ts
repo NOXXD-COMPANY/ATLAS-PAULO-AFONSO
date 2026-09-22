@@ -6,7 +6,6 @@ export const TIPOS_ORDEM = [
   'institucional',
   'hospedagem',
   'agropecuario',
-  'misto',
   'desconhecido',
 ] as const;
 
@@ -18,7 +17,6 @@ export const TIPO_CORES: Record<string, [number, number, number, number]> = {
   institucional: [0, 188, 212, 210],
   hospedagem: [76, 175, 80, 210],
   agropecuario: [139, 195, 74, 210],
-  misto: [255, 193, 7, 210],
   desconhecido: [158, 158, 158, 190],
 };
 

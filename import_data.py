@@ -25,8 +25,8 @@ DB_USER = "atlas"
 DB_PASSWORD = "atlas"
 DB_NAME = "atlas_urbano"
 
-# ~6 m de tolerância na borda (ex.: porta na fachada).
-POINT_TOLERANCE_DEG = 0.00006
+# ~15 m de tolerância na borda (ex.: porta na fachada, erro de GPS).
+POINT_TOLERANCE_DEG = 0.000135
 
 # Raio do círculo usado para endereços sem prédio (~5 m).
 POINT_BUFFER_DEG = 0.000045
@@ -46,7 +46,10 @@ CREATE TABLE IF NOT EXISTS buildings (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
-# COD_ESPECIE do QG (CNEFE/IBGE) -> tipo de uso.
+# COD_ESPECIE do QG (CNEFE/IBGE) -> tipo de uso. Códigos oficiais:
+# 1=domicílio particular, 2=domicílio coletivo, 3=agropecuário,
+# 4=ensino, 5=saúde, 6=outras finalidades, 7=em construção,
+# 8=religioso. Sem categoria para "em construção": desconhecido.
 ESPECIE_TO_TIPO = {
     "1": "residencial",
     "2": "hospedagem",
@@ -54,7 +57,7 @@ ESPECIE_TO_TIPO = {
     "4": "institucional",
     "5": "servico",
     "6": "comercial",
-    "7": "misto",
+    "7": "desconhecido",
     "8": "religioso",
 }
 
