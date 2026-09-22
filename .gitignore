@@ -11,6 +11,10 @@ __pycache__/
 .mysql-data/
 data/raw/
 
+# Arquivos de dados fornecidos (não fazem parte do projeto)
+overture-*.zip
+qg_*.json*
+
 # Node
 frontend/node_modules/
 frontend/dist/
