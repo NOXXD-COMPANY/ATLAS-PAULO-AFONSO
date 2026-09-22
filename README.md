@@ -86,8 +86,9 @@ data/raw/           arquivos fornecidos (overture/ e qg/)
 
 - **3D**: habilitado apenas de forma trivial: prédios com `num_pavimentos`
   (presente em 33 edificações do Overture) recebem extrusão `pavimentos × 3 m`.
-  O restante permanece 2D. A base (OpenFreeMap) também desenha os prédios
-  do OSM em 3D. Incline a câmera (botão direito arrastar) para ver.
+  O restante permanece 2D. Os prédios do OSM em 3D vêm de fonte vetorial
+  (OpenFreeMap) sobre a base OSM; se ela falhar, a base continua.
+  Incline a câmera (botão direito arrastar) para ver.
 - **Ponto de extensão**: a carga estática (script) e o endpoint
   `GET /api/buildings` são os lugares onde entra uma futura fonte real
   (importação IBGE/prefeitura, filtros `?bairro=X`, paginação).
