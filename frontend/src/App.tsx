@@ -1,10 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as maplibregl from 'maplibre-gl';
-import type {
-  Map as MapLibreMap,
-  MapLayerMouseEvent,
-  StyleSpecification,
-} from 'maplibre-gl';
+import type { Map as MapLibreMap, MapLayerMouseEvent } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { MapboxOverlay } from '@deck.gl/mapbox';
 import { GeoJsonLayer } from '@deck.gl/layers';
@@ -32,20 +28,8 @@ type GeoJsonFC = { type: 'FeatureCollection'; features: GeoJsonFeature[] };
 
 const API_URL = 'http://127.0.0.1:8000';
 
-// Mapa base: OpenStreetMap (tiles públicos, sem chave de API).
-const OSM_STYLE: StyleSpecification = {
-  version: 8,
-  sources: {
-    osm: {
-      type: 'raster',
-      tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
-      tileSize: 256,
-      attribution: '© OpenStreetMap contributors',
-      maxzoom: 19,
-    },
-  },
-  layers: [{ id: 'osm', type: 'raster', source: 'osm' }],
-};
+// Mapa base: OpenFreeMap (vetor, tiles públicos, sem chave de API).
+const OSM_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
 
 function boundingBox(fc: GeoJsonFC | null): [[number, number], [number, number]] {
   let minLon = Infinity;
@@ -95,6 +79,27 @@ export default function App() {
       layers: [],
     });
     map.addControl(overlay);
+    map.on('load', () => {
+      const beforeId = map
+        .getStyle()
+        ?.layers.find((l) => l.type === 'symbol')?.id;
+      map.addLayer(
+        {
+          id: 'osm-3d-buildings',
+          type: 'fill-extrusion',
+          source: 'openmaptiles',
+          'source-layer': 'building',
+          filter: ['!=', ['get', 'hide_3d'], true],
+          paint: {
+            'fill-extrusion-color': '#cfcfcf',
+            'fill-extrusion-height': ['coalesce', ['get', 'rendered_height'], 8],
+            'fill-extrusion-base': ['coalesce', ['get', 'rendered_min_height'], 0],
+            'fill-extrusion-opacity': 0.9,
+          },
+        },
+        beforeId,
+      );
+    });
     overlayRef.current = overlay;
     mapRef.current = map;
 
