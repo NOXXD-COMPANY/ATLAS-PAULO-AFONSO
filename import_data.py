@@ -28,8 +28,8 @@ DB_NAME = "atlas_urbano"
 # ~6 m de tolerância na borda (ex.: porta na fachada).
 POINT_TOLERANCE_DEG = 0.00006
 
-# Raio do círculo usado para endereços sem prédio (~10 m).
-POINT_BUFFER_DEG = 0.00009
+# Raio do círculo usado para endereços sem prédio (~5 m).
+POINT_BUFFER_DEG = 0.000045
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS buildings (
