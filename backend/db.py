@@ -25,7 +25,6 @@ def connect():
 
 
 def row_to_feature(row):
-    """Transforma uma linha da tabela `buildings` em uma Feature GeoJSON."""
     geometry = json.loads(row["ST_AsGeoJSON(geom)"])
     properties = {k: row[k] for k in (
         "id", "area_m2", "tipo", "endereco", "bairro",

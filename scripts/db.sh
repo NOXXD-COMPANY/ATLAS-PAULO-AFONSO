@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# Inicia/para a instância local do MariaDB usada pelo Atlas Urbano.
-# PONTO DE EXTENSÃO: quando houver um MySQL/SQL de verdade (Docker/compose ou
-# servidor dedicado), este script pode ser descartado.
+# Inicia/para o MariaDB local do Atlas Urbano.
 set -e
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

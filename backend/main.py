@@ -1,12 +1,4 @@
-"""API do Atlas Urbano — MVP.
-
-Retorna as edificações como GeoJSON para o frontend (React/deck.gl).
-
-PONTO DE EXTENSÃO FUTURA:
-  - Quando houver autenticação, adicionar dependências de auth por rota.
-  - Se a carga ficar pesada, adicionar paginação / filtros (bairro, tipo)
-    aqui mesmo, sem mudar o frontend: GET /api/buildings?bairro=X&tipo=Y.
-"""
+"""API do Atlas Urbano: edificações como GeoJSON para o frontend."""
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

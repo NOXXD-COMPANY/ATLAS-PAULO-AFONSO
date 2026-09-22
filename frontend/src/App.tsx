@@ -30,10 +30,6 @@ type GeoJsonFeature = {
 
 type GeoJsonFC = { type: 'FeatureCollection'; features: GeoJsonFeature[] };
 
-/* ------------------------------------------------------------------ */
-/* Constantes de visualização                                          */
-/* ------------------------------------------------------------------ */
-
 const API_URL = 'http://127.0.0.1:8000';
 
 // Mapa base: OpenStreetMap (tiles públicos, sem chave de API).
@@ -50,10 +46,6 @@ const OSM_STYLE: StyleSpecification = {
   },
   layers: [{ id: 'osm', type: 'raster', source: 'osm' }],
 };
-
-/* ------------------------------------------------------------------ */
-/* Helpers                                                             */
-/* ------------------------------------------------------------------ */
 
 function boundingBox(fc: GeoJsonFC | null): [[number, number], [number, number]] {
   let minLon = Infinity;
@@ -79,10 +71,6 @@ function boundingBox(fc: GeoJsonFC | null): [[number, number], [number, number]]
   ];
 }
 
-/* ------------------------------------------------------------------ */
-/* Componente principal                                                */
-/* ------------------------------------------------------------------ */
-
 export default function App() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
@@ -93,7 +81,6 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  /* Inicializa o mapa base (MapLibre) + overlay deck.gl. */
   useEffect(() => {
     if (!mapContainer.current) return;
     const map = new maplibregl.Map({
@@ -106,12 +93,10 @@ export default function App() {
     const overlay = new MapboxOverlay({
       layers: [],
     });
-    // deck.gl (GeoJsonLayer) por cima do mapa MapLibre.
     map.addControl(overlay);
     overlayRef.current = overlay;
     mapRef.current = map;
 
-    // Clique em um prédio -> seleciona / abre o painel.
     const onClick = (e: MapLayerMouseEvent) => {
       const info = overlay.pickObject({ x: e.point.x, y: e.point.y });
       const props = info?.object?.properties as BuildingProps | undefined;
@@ -127,7 +112,6 @@ export default function App() {
     };
   }, []);
 
-  /* Carrega os prédios do backend (nunca o MySQL diretamente). */
   useEffect(() => {
     async function load() {
       try {
@@ -144,7 +128,6 @@ export default function App() {
     load();
   }, []);
 
-  /* Ajusta a câmera para a região dos dados, quando chegam. */
   useEffect(() => {
     if (!data || !mapRef.current) return;
     const [[swLon, swLat], [neLon, neLat]] = boundingBox(data);
@@ -164,19 +147,14 @@ export default function App() {
     ) ?? null;
   }, [selectedId, data]);
 
-  /* Geometrias + cores + extrusão condicional (num_pavimentos). */
   const layers = useMemo(() => {
     const buildings = new GeoJsonLayer({
       id: 'buildings',
-      // O deck.gl aceita FeatureCollection<Geometry, GeoJsonProperties>;
-      // o tipo local `GeoJsonFC` é compatível com essa forma.
+      // `as any`: o tipo local é compatível com o esperado pelo deck.gl.
       data: (data ?? { type: 'FeatureCollection', features: [] }) as any,
       pickable: true,
       stroked: true,
       filled: true,
-      // PONTO DE EXTENSÃO: quando houver altura real no dado, ativar 3D.
-      // Aqui aproveita-se apenas o campo `num_pavimentos` (quando existir);
-      // cada pavimento ~3 m.
       extruded: true,
       wireframe: false,
       getElevation: (f: any) => (f.properties?.num_pavimentos ?? 0) * 3,
@@ -203,7 +181,6 @@ export default function App() {
     overlayRef.current?.setProps({ layers });
   }, [layers]);
 
-  /* Totais por tipo para a legenda. */
   const legenda = useMemo(() => {
     const counts = new Map<string, number>();
     for (const f of data?.features ?? []) {

@@ -1,21 +1,5 @@
 #!/usr/bin/env python3
-"""
-Importa as edificações (Overture) e endereços/estabelecimentos (QG - CNEFE)
-para o MySQL.
-
-Fluxo:
-  1. Lê o GeoJSON de edificações do Overture.
-  2. Lê o GeoJSON de pontos de endereço do QG.
-  3. Relaciona espacialmente: um ponto de endereço é associado ao prédio
-     que o contém (com tolerância de alguns metros na borda).
-  4. Determina o tipo de uso (sempre "desconhecido" quando não há dado).
-  5. Grava tudo em uma tabela única `buildings` no MySQL.
-
-PONTO DE EXTENSÃO FUTURA:
-  Quando houver um pipeline de importação real (IBGE/prefeitura/API), este
-  script será substituído por um job que lê outras fontes e grava na mesma
-  tabela `buildings` — o frontend/backend não precisarão mudar.
-"""
+"""Importa edificações (Overture) e endereços (QG/CNEFE) para o MySQL."""
 
 import json
 import math
@@ -25,10 +9,6 @@ import pymysql
 from shapely.geometry import Point, shape, mapping
 from shapely.ops import transform
 from shapely import strtree
-
-# ---------------------------------------------------------------------------
-# Configuração
-# ---------------------------------------------------------------------------
 
 DATA_DIR = "data/raw"
 OVERTURE_BUILDINGS = (
@@ -43,8 +23,7 @@ DB_USER = "atlas"
 DB_PASSWORD = "atlas"
 DB_NAME = "atlas_urbano"
 
-# Tolerância (em graus) para associar um ponto de endereço que fica a alguns
-# metros da borda do polígono (ex.: porta na fachada) — ~6 m no Brasil.
+# ~6 m de tolerância na borda (ex.: porta na fachada).
 POINT_TOLERANCE_DEG = 0.00006
 
 SCHEMA = """
@@ -62,9 +41,7 @@ CREATE TABLE IF NOT EXISTS buildings (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
-# Códigos de espécie do QG (CNEFE/IBGE) -> tipo de uso. Decodificado a partir
-# dos próprios dados: 1=domicílio, 2=hospedagem, 3=agropecuário, 4=ensino,
-# 5=saúde, 6=outras finalidades, 7=misto, 8=religioso.
+# COD_ESPECIE do QG (CNEFE/IBGE) -> tipo de uso.
 ESPECIE_TO_TIPO = {
     "1": "residencial",
     "2": "hospedagem",
@@ -76,7 +53,7 @@ ESPECIE_TO_TIPO = {
     "8": "religioso",
 }
 
-# Fallback: subtipo/class do próprio Overture (presente em poucos prédios).
+# Fallback para prédios sem ponto QG associado.
 OVAERTURE_SUBTYPE_TO_TIPO = {
     "residential": "residencial",
     "commercial": "comercial",
@@ -131,8 +108,6 @@ def load_qg_points():
 
 
 def best_type(qg_props, overture_props):
-    """Determina o tipo de uso. Prioridade: QG (endereço/estabelecimento),
-    depois subtipo do Overture, senão 'desconhecido'."""
     especie = (qg_props or {}).get("COD_ESPECIE")
     if especie in ESPECIE_TO_TIPO:
         return ESPECIE_TO_TIPO[especie]
@@ -146,7 +121,6 @@ def best_type(qg_props, overture_props):
 
 
 def relate_points_to_buildings(buildings, points):
-    """Retorna dict: índice do prédio -> lista de índices de pontos QG."""
     polys = []
     for b in buildings:
         g = shape(b["geometry"])
@@ -156,7 +130,6 @@ def relate_points_to_buildings(buildings, points):
 
     tree = strtree.STRtree(polys)
 
-    # ponto -> melhor prédio (índice)
     point_to_building = {}
     for qi, feat in enumerate(points):
         x, y = feat["geometry"]["coordinates"]
@@ -166,7 +139,6 @@ def relate_points_to_buildings(buildings, points):
             hits = tree.query(pt.buffer(POINT_TOLERANCE_DEG), predicate="intersects")
         if len(hits) == 0:
             continue
-        # entre os candidatos, escolhe o mais próximo do ponto
         cands = [int(i) for i in hits]
         best = min(cands, key=lambda bi: pt.distance(polys[bi]))
         point_to_building[qi] = best
@@ -178,8 +150,6 @@ def relate_points_to_buildings(buildings, points):
 
 
 def pick_preferred_point(qg_indices, points):
-    """Escolhe o ponto QG mais útil: com estabelecimento comercial/serviço,
-    depois com endereço, senão qualquer um."""
     def score(qi):
         p = points[qi]["properties"]
         has_estab = bool(p.get("DSC_ESTABELECIMENTO"))
@@ -243,9 +213,7 @@ def main():
                     tipo, endereco, bairro, estabelecimento, num_pav, fonte,
                 ))
 
-            # Limite de geometria no MySQL: ST_GeomFromGeoJSON.
-            # (SRID é 0 em toda a tabela — todos os dados estão no mesmo
-            # espaço lon/lat, então o índice espacial funciona normalmente.)
+            # SRID 0 em toda a tabela (tudo em lon/lat).
             sql = (
                 "INSERT INTO buildings "
                 "(id, geom, area_m2, tipo, endereco, bairro, estabelecimento, num_pavimentos, fonte) "
