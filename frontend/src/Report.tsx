@@ -20,12 +20,19 @@ export default function Report({
 }) {
   const [filtroTipo, setFiltroTipo] = useState('todos');
   const [filtroBairros, setFiltroBairros] = useState<string[]>([]);
+  const [buscaBairro, setBuscaBairro] = useState('');
 
   const bairros = useMemo(() => {
     const nomes = new Set<string>();
     for (const f of data.features) nomes.add(bairroDe(f));
     return [...nomes].sort((a, b) => a.localeCompare(b, 'pt-BR'));
   }, [data]);
+
+  const bairrosFiltrados = useMemo(() => {
+    const q = buscaBairro.trim().toLowerCase();
+    if (!q) return bairros;
+    return bairros.filter((b) => b.toLowerCase().includes(q));
+  }, [bairros, buscaBairro]);
 
   const filtradas = useMemo(
     () =>
@@ -73,6 +80,10 @@ export default function Report({
       </button>
       <h2>Relatório</h2>
 
+      <button className="export-btn" onClick={() => window.print()}>
+        Exportar PDF
+      </button>
+
       <section className="report-section report-filtros">
         <h3>Filtros</h3>
         <label>
@@ -98,9 +109,15 @@ export default function Report({
               </button>
             )}
           </span>
+          <input
+            type="search"
+            placeholder="Buscar bairro…"
+            value={buscaBairro}
+            onChange={(e) => setBuscaBairro(e.target.value)}
+          />
           <select
             multiple
-            size={6}
+            size={10}
             value={filtroBairros}
             onChange={(e) =>
               setFiltroBairros(
@@ -108,7 +125,7 @@ export default function Report({
               )
             }
           >
-            {bairros.map((b) => (
+            {bairrosFiltrados.map((b) => (
               <option key={b} value={b}>
                 {b}
               </option>
@@ -164,9 +181,6 @@ export default function Report({
         </table>
       </section>
 
-      <button className="export-btn" onClick={() => window.print()}>
-        Exportar PDF
-      </button>
     </div>
   );
 }

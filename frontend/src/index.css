@@ -77,7 +77,8 @@ body,
 }
 
 .report-panel {
-  width: 340px;
+  width: 440px;
+  max-width: calc(100vw - 24px);
 }
 
 .report-panel h2 {
@@ -113,6 +114,13 @@ body,
   border-radius: 6px;
   font-size: 13px;
   background: #fff;
+}
+
+.report-filtros input[type='search'] {
+  padding: 6px 8px;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  border-radius: 6px;
+  font-size: 13px;
 }
 
 .total-card {
@@ -201,6 +209,10 @@ body,
 }
 
 @media print {
+  @page {
+    margin: 12mm;
+  }
+
   .map-container,
   .legend,
   .report-button,
@@ -216,12 +228,30 @@ body,
     max-height: none;
     box-shadow: none;
     overflow: visible;
+    font-size: 12px;
   }
 
   .report-panel .close,
   .report-panel .export-btn,
   .report-panel .report-filtros {
     display: none !important;
+  }
+
+  .report-panel .total-card {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .report-panel thead {
+    display: table-header-group;
+  }
+
+  .report-panel tr {
+    break-inside: avoid;
+  }
+
+  .report-panel tbody tr:nth-child(even) td {
+    background: transparent;
   }
 
   .print-filtros {
