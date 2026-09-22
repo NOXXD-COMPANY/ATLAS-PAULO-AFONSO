@@ -1,0 +1,9 @@
+[server]
+tmpdir                        = /tmp/mariadb-tmp
+
+[mysqld]
+tmpdir                        = /tmp/mariadb-tmp
+innodb_flush_log_at_trx_commit = 2
+
+[mariadb]
+tmpdir                        = /tmp/mariadb-tmp
