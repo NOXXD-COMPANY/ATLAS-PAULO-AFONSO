@@ -73,80 +73,96 @@ export default function Report({
       </button>
       <h2>Relatório</h2>
 
-      <label className="filtro">
-        Tipo
-        <select
-          value={filtroTipo}
-          onChange={(e) => setFiltroTipo(e.target.value)}
-        >
-          <option value="todos">Todos</option>
-          {TIPOS_ORDEM.map((t) => (
-            <option key={t} value={t}>
-              {t}
-            </option>
-          ))}
-        </select>
-      </label>
-
-      <div className="filtro">
-        <span>
-          Bairros
-          {filtroBairros.length > 0 && (
-            <button
-              className="limpar"
-              onClick={() => setFiltroBairros([])}
-            >
-              limpar
-            </button>
-          )}
-        </span>
-        <select
-          multiple
-          size={6}
-          value={filtroBairros}
-          onChange={(e) =>
-            setFiltroBairros(
-              [...e.target.selectedOptions].map((o) => o.value),
-            )
-          }
-        >
-          {bairros.map((b) => (
-            <option key={b} value={b}>
-              {b}
-            </option>
-          ))}
-        </select>
-      </div>
+      <section className="report-section report-filtros">
+        <h3>Filtros</h3>
+        <label>
+          Tipo
+          <select
+            value={filtroTipo}
+            onChange={(e) => setFiltroTipo(e.target.value)}
+          >
+            <option value="todos">Todos</option>
+            {TIPOS_ORDEM.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>
+            Bairros
+            {filtroBairros.length > 0 && (
+              <button className="limpar" onClick={() => setFiltroBairros([])}>
+                limpar
+              </button>
+            )}
+          </span>
+          <select
+            multiple
+            size={6}
+            value={filtroBairros}
+            onChange={(e) =>
+              setFiltroBairros(
+                [...e.target.selectedOptions].map((o) => o.value),
+              )
+            }
+          >
+            {bairros.map((b) => (
+              <option key={b} value={b}>
+                {b}
+              </option>
+            ))}
+          </select>
+        </label>
+      </section>
 
       <p className="print-filtros">{resumoFiltros}</p>
 
-      <p className="total">
-        Edificações: {filtradas.length.toLocaleString('pt-BR')}
-      </p>
+      <section className="report-section total-card">
+        <span>Edificações</span>
+        <strong>{filtradas.length.toLocaleString('pt-BR')}</strong>
+      </section>
 
-      <h3>Por tipo</h3>
-      <table>
-        <tbody>
-          {porTipo.map(({ nome, n }) => (
-            <tr key={nome}>
-              <td>{nome}</td>
-              <td>{n.toLocaleString('pt-BR')}</td>
+      <section className="report-section">
+        <h3>Por tipo</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Tipo</th>
+              <th>Quantidade</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {porTipo.map(({ nome, n }) => (
+              <tr key={nome}>
+                <td>{nome}</td>
+                <td>{n.toLocaleString('pt-BR')}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
 
-      <h3>Por bairro</h3>
-      <table>
-        <tbody>
-          {porBairro.map(({ nome, n }) => (
-            <tr key={nome}>
-              <td>{nome}</td>
-              <td>{n.toLocaleString('pt-BR')}</td>
+      <section className="report-section">
+        <h3>Por bairro</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Bairro</th>
+              <th>Quantidade</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {porBairro.map(({ nome, n }) => (
+              <tr key={nome}>
+                <td>{nome}</td>
+                <td>{n.toLocaleString('pt-BR')}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
 
       <button className="export-btn" onClick={() => window.print()}>
         Exportar PDF
