@@ -2,6 +2,15 @@ import { useMemo, useState } from 'react';
 import { TIPOS_ORDEM } from './constants';
 import type { GeoJsonFC } from './App';
 
+function normalizarBairro(nome: string): string {
+  return nome.replace(/\s+\d+\s*$/, '').trim() || nome;
+}
+
+function bairroDe(f: GeoJsonFC['features'][number]): string {
+  const b = f.properties['bairro'];
+  return typeof b === 'string' && b ? normalizarBairro(b) : 'Não informado';
+}
+
 export default function Report({
   data,
   onClose,
@@ -10,31 +19,27 @@ export default function Report({
   onClose: () => void;
 }) {
   const [filtroTipo, setFiltroTipo] = useState('todos');
-  const [filtroBairro, setFiltroBairro] = useState('todos');
+  const [filtroBairros, setFiltroBairros] = useState<string[]>([]);
 
   const bairros = useMemo(() => {
     const nomes = new Set<string>();
-    for (const f of data.features) {
-      const b = f.properties['bairro'];
-      if (typeof b === 'string' && b) nomes.add(b);
-    }
+    for (const f of data.features) nomes.add(bairroDe(f));
     return [...nomes].sort((a, b) => a.localeCompare(b, 'pt-BR'));
   }, [data]);
 
   const filtradas = useMemo(
     () =>
       data.features.filter((f) => {
-        const p = f.properties;
         if (
           filtroTipo !== 'todos' &&
-          String(p['tipo'] ?? 'desconhecido') !== filtroTipo
+          String(f.properties['tipo'] ?? 'desconhecido') !== filtroTipo
         )
           return false;
-        if (filtroBairro !== 'todos' && p['bairro'] !== filtroBairro)
+        if (filtroBairros.length > 0 && !filtroBairros.includes(bairroDe(f)))
           return false;
         return true;
       }),
-    [data, filtroTipo, filtroBairro],
+    [data, filtroTipo, filtroBairros],
   );
 
   const porTipo = useMemo(() => {
@@ -51,13 +56,15 @@ export default function Report({
   const porBairro = useMemo(() => {
     const counts = new Map<string, number>();
     for (const f of filtradas) {
-      const b = String(f.properties['bairro'] ?? 'Não informado');
+      const b = bairroDe(f);
       counts.set(b, (counts.get(b) ?? 0) + 1);
     }
     return [...counts.entries()]
       .map(([nome, n]) => ({ nome, n }))
       .sort((a, b) => b.n - a.n);
   }, [filtradas]);
+
+  const resumoFiltros = `Tipo: ${filtroTipo === 'todos' ? 'todos' : filtroTipo}; Bairros: ${filtroBairros.length === 0 ? 'todos' : filtroBairros.join(', ')}`;
 
   return (
     <div className="info-panel report-panel">
@@ -81,20 +88,37 @@ export default function Report({
         </select>
       </label>
 
-      <label className="filtro">
-        Bairro
+      <div className="filtro">
+        <span>
+          Bairros
+          {filtroBairros.length > 0 && (
+            <button
+              className="limpar"
+              onClick={() => setFiltroBairros([])}
+            >
+              limpar
+            </button>
+          )}
+        </span>
         <select
-          value={filtroBairro}
-          onChange={(e) => setFiltroBairro(e.target.value)}
+          multiple
+          size={6}
+          value={filtroBairros}
+          onChange={(e) =>
+            setFiltroBairros(
+              [...e.target.selectedOptions].map((o) => o.value),
+            )
+          }
         >
-          <option value="todos">Todos</option>
           {bairros.map((b) => (
             <option key={b} value={b}>
               {b}
             </option>
           ))}
         </select>
-      </label>
+      </div>
+
+      <p className="print-filtros">{resumoFiltros}</p>
 
       <p className="total">
         Edificações: {filtradas.length.toLocaleString('pt-BR')}
@@ -123,6 +147,10 @@ export default function Report({
           ))}
         </tbody>
       </table>
+
+      <button className="export-btn" onClick={() => window.print()}>
+        Exportar PDF
+      </button>
     </div>
   );
 }
