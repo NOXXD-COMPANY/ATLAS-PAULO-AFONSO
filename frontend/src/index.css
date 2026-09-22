@@ -1,0 +1,127 @@
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+.map-container {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+/* Legenda */
+.legend {
+  position: absolute;
+  left: 12px;
+  bottom: 24px;
+  z-index: 10;
+  background: rgba(255, 255, 255, 0.94);
+  border-radius: 8px;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.25);
+  padding: 10px 12px;
+  font-size: 12px;
+  max-width: 220px;
+}
+
+.legend h4 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #444;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+  text-transform: capitalize;
+}
+
+.legend-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+}
+
+/* Painel lateral de informações */
+.info-panel {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 300px;
+  max-height: calc(100% - 24px);
+  overflow-y: auto;
+  z-index: 10;
+  background: rgba(255, 255, 255, 0.96);
+  border-radius: 8px;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.25);
+  padding: 14px 16px;
+  font-size: 13px;
+}
+
+.info-panel h2 {
+  margin: 0 0 10px;
+  font-size: 16px;
+}
+
+.info-panel dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 12px;
+}
+
+.info-panel dt {
+  font-weight: 600;
+  color: #555;
+}
+
+.info-panel dd {
+  margin: 0;
+  word-break: break-word;
+  text-transform: capitalize;
+}
+
+.info-panel .tipo-badge {
+  display: inline-block;
+  margin-top: 2px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: #fff;
+  font-size: 12px;
+  text-transform: capitalize;
+}
+
+.info-panel .close {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 18px;
+  color: #666;
+  line-height: 1;
+}
+
+.info-panel .close:hover {
+  color: #000;
+}
+
+.empty-hint {
+  position: absolute;
+  bottom: 24px;
+  right: 16px;
+  z-index: 10;
+  color: #777;
+  font-size: 12px;
+  background: rgba(255, 255, 255, 0.8);
+  padding: 4px 10px;
+  border-radius: 6px;
+}
