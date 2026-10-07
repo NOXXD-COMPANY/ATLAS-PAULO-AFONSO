@@ -31,7 +31,15 @@ type GeoJsonFeature = {
 
 export type GeoJsonFC = { type: 'FeatureCollection'; features: GeoJsonFeature[] };
 
-const API_URL = 'http://127.0.0.1:8000';
+const API_URL = import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:8000';
+
+// Altura ilustrativa (m) quando o número de pavimentos é desconhecido.
+// Prédios com `num_pavimentos` usam pavimentos × 3 m (dado real do Overture).
+const ALTURA_PADRAO_M = 5;
+
+// Carga paginada: ~5 mil features por requisição em vez de um único JSON
+// de ~200 MB, para o mapa ir pintando aos poucos sem travar o navegador.
+const PAGE_SIZE = 5000;
 
 // Mapa base: OpenStreetMap (tiles públicos, sem chave de API).
 const OSM_STYLE: StyleSpecification = {
@@ -48,8 +56,7 @@ const OSM_STYLE: StyleSpecification = {
   layers: [{ id: 'osm', type: 'raster', source: 'osm' }],
 };
 
-function boundingBox(fc: GeoJsonFC | null): [[number, number], [number, number]] {
-  let minLon = Infinity;
+function boundingBox(fc: GeoJsonFC | null): [[number, number], [number, number]] { let minLon = Infinity;
   let minLat = Infinity;
   let maxLon = -Infinity;
   let maxLat = -Infinity;
@@ -80,9 +87,14 @@ export default function App() {
   const [data, setData] = useState<GeoJsonFC | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [progress, setProgress] = useState({ loaded: 0, total: 0 });
   const [error, setError] = useState<string | null>(null);
   const [showPontos, setShowPontos] = useState(true);
+  const [modoPontos, setModoPontos] = useState<'todos' | 'no-selecionado'>(
+    'todos',
+  );
   const [showReport, setShowReport] = useState(false);
+  const didFitRef = useRef(false);
 
   useEffect(() => {
     if (!mapContainer.current) return;
@@ -93,38 +105,13 @@ export default function App() {
       zoom: 14,
       maxPitch: 85,
     });
+    // O 3D é 100% dos nossos dados (camada deck.gl abaixo): cada volume
+    // extrusado É a feature (polígono ou bolinha), logo carrega sempre o
+    // endereço e a cor do tipo. Sem camada 3D externa.
     const overlay = new MapboxOverlay({
       layers: [],
     });
     map.addControl(overlay);
-    map.on('load', () => {
-      try {
-        if (map.getSource('openmaptiles')) return;
-        map.addSource('openmaptiles', {
-          type: 'vector',
-          url: 'https://tiles.openfreemap.org/planet',
-        });
-        map.addLayer({
-          id: 'osm-3d-buildings',
-          type: 'fill-extrusion',
-          source: 'openmaptiles',
-          'source-layer': 'building',
-          filter: ['!=', ['get', 'hide_3d'], true],
-          paint: {
-            'fill-extrusion-color': '#cfcfcf',
-            'fill-extrusion-height': ['coalesce', ['get', 'rendered_height'], 8],
-            'fill-extrusion-base': [
-              'coalesce',
-              ['get', 'rendered_min_height'],
-              0,
-            ],
-            'fill-extrusion-opacity': 0.9,
-          },
-        });
-      } catch {
-        // Sem 3D: mantém só o mapa base.
-      }
-    });
     overlayRef.current = overlay;
     mapRef.current = map;
 
@@ -144,34 +131,71 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+
+    async function fetchJson(url: string, attempts: number): Promise<any> {
+      let lastErr: unknown = null;
+      for (let attempt = 1; attempt <= attempts; attempt++) {
+        try {
+          const res = await fetch(url);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return await res.json();
+        } catch (err) {
+          lastErr = err;
+          if (attempt < attempts)
+            await new Promise((r) => setTimeout(r, 2000));
+        }
+      }
+      throw lastErr;
+    }
+
     async function load() {
       try {
-        for (let attempt = 1; ; attempt++) {
-          try {
-            const res = await fetch(`${API_URL}/api/buildings`);
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const fc = (await res.json()) as GeoJsonFC;
-            if (!fc || !Array.isArray(fc.features)) {
-              throw new Error('resposta inválida da API');
-            }
-            setData(fc);
-            return;
-          } catch (err) {
-            if (attempt >= 5) throw err;
-            await new Promise((r) => setTimeout(r, 2000));
+        // Total para a barra de progresso (o backend pode estar subindo).
+        // em_cobertura: esconde as bolinhas fora da área com prédios.
+        const stats = await fetchJson(
+          `${API_URL}/api/stats?em_cobertura=true`,
+          5,
+        );
+        const total =
+          typeof stats?.total === 'number' && stats.total > 0
+            ? stats.total
+            : 0;
+        if (!cancelled && total > 0) setProgress({ loaded: 0, total });
+
+        // Páginas acumuladas: o mapa pinta cada lote sem congelar a tela.
+        const all: GeoJsonFeature[] = [];
+        let offset = 0;
+        for (;;) {
+          const fc = (await fetchJson(
+            `${API_URL}/api/buildings?em_cobertura=true&limit=${PAGE_SIZE}&offset=${offset}`,
+            3,
+          )) as GeoJsonFC;
+          if (!fc || !Array.isArray(fc.features)) {
+            throw new Error('resposta inválida da API');
           }
+          all.push(...fc.features);
+          offset += fc.features.length;
+          if (cancelled) return;
+          setProgress({ loaded: offset, total: Math.max(total, offset) });
+          setData({ type: 'FeatureCollection', features: [...all] });
+          if (fc.features.length < PAGE_SIZE) break;
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Erro ao carregar dados');
+        if (!cancelled)
+          setError(err instanceof Error ? err.message : 'Erro ao carregar dados');
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     }
     load();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
-    if (!data || !mapRef.current) return;
+    if (!data || !mapRef.current || didFitRef.current) return;
     const [[swLon, swLat], [neLon, neLat]] = boundingBox(data);
     mapRef.current.fitBounds(
       [
@@ -180,25 +204,49 @@ export default function App() {
       ],
       { padding: 60, duration: 0 },
     );
+    didFitRef.current = true;
   }, [data]);
+
+  const selectedFeature = useMemo<GeoJsonFeature | null>(() => {
+    if (!selectedId || !data) return null;
+    // Baseado nos dados completos para o painel não sumir com os filtros.
+    return data.features.find(
+      (f) => String(f.properties['id']) === selectedId,
+    ) ?? null;
+  }, [selectedId, data]);
+
+  // Chave canônica da geometria: linhas que compartilham o polígono
+  // (1 telhado × N endereços) têm a mesma chave.
+  const geomKeys = useMemo(
+    () =>
+      data?.features.map((f) => JSON.stringify(f.geometry.coordinates)) ??
+      [],
+    [data],
+  );
+  const selectedGeomKey = selectedFeature
+    ? JSON.stringify(selectedFeature.geometry.coordinates)
+    : null;
 
   const visibleData = useMemo<GeoJsonFC | null>(() => {
     if (!data) return null;
-    if (showPontos) return data;
+    if (modoPontos === 'todos') {
+      if (showPontos) return data;
+      return {
+        type: 'FeatureCollection',
+        features: data.features.filter(
+          (f) => f.properties['fonte'] !== FONTE_PONTO,
+        ),
+      };
+    }
+    // 'no-selecionado': isola o prédio clicado e seus endereços
+    // (as linhas que repetem a mesma geometria). Sem seleção, vazio.
+    if (selectedGeomKey == null)
+      return { type: 'FeatureCollection', features: [] };
     return {
       type: 'FeatureCollection',
-      features: data.features.filter(
-        (f) => f.properties['fonte'] !== FONTE_PONTO,
-      ),
+      features: data.features.filter((_, i) => geomKeys[i] === selectedGeomKey),
     };
-  }, [data, showPontos]);
-
-  const selectedFeature = useMemo<GeoJsonFeature | null>(() => {
-    if (!selectedId || !visibleData) return null;
-    return visibleData.features.find(
-      (f) => String(f.properties['id']) === selectedId,
-    ) ?? null;
-  }, [selectedId, visibleData]);
+  }, [data, showPontos, modoPontos, geomKeys, selectedGeomKey]);
 
   const layers = useMemo(() => {
     const buildings = new GeoJsonLayer({
@@ -210,7 +258,14 @@ export default function App() {
       filled: true,
       extruded: true,
       wireframe: false,
-      getElevation: (f: any) => (f.properties?.num_pavimentos ?? 0) * 3,
+      getElevation: (f: any) => {
+        // Bolinhas (endereço sem prédio) ficam no plano: sem volume.
+        if (f.properties?.fonte === FONTE_PONTO) return 0;
+        const pav = f.properties?.num_pavimentos;
+        return typeof pav === 'number' && pav > 0
+          ? pav * 3
+          : ALTURA_PADRAO_M;
+      },
       getFillColor: (f: any) => corDoTipo(f.properties?.tipo),
       getLineColor: [45, 45, 45, 140],
       lineWidthMinPixels: 0.5,
@@ -279,6 +334,14 @@ export default function App() {
           }}
         >
           Carregando prédios…
+          {progress.total > 0 && (
+            <>
+              <br />
+              {progress.loaded.toLocaleString('pt-BR')} de{' '}
+              {progress.total.toLocaleString('pt-BR')} (
+              {Math.round((progress.loaded / progress.total) * 100)}%)
+            </>
+          )}
         </div>
       )}
 
@@ -312,6 +375,36 @@ export default function App() {
             />
             Endereços sem prédio
           </label>
+          {showPontos && (
+            <div className="legend-sub">
+              <label className="legend-toggle">
+                <input
+                  type="radio"
+                  name="modo-pontos"
+                  checked={modoPontos === 'todos'}
+                  onChange={() => setModoPontos('todos')}
+                />
+                Tudo visível
+              </label>
+              <label
+                className="legend-toggle"
+                title="Isola o prédio clicado e os endereços dele"
+              >
+                <input
+                  type="radio"
+                  name="modo-pontos"
+                  checked={modoPontos === 'no-selecionado'}
+                  onChange={() => setModoPontos('no-selecionado')}
+                />
+                Só o prédio selecionado
+              </label>
+              {modoPontos === 'no-selecionado' && !selectedFeature && (
+                <span style={{ color: '#888', fontSize: 12 }}>
+                  Clique em um prédio para isolar os endereços dele
+                </span>
+              )}
+            </div>
+          )}
           {legenda.map(({ tipo, n }) => (
             <div key={tipo} className="legend-item">
               <span
@@ -324,6 +417,13 @@ export default function App() {
               <span style={{ marginLeft: 'auto', color: '#888' }}>{n}</span>
             </div>
           ))}
+          <div style={{ color: '#888', fontSize: 12, marginTop: 4 }}>
+            Prédios em 3D (altura ilustrativa de {ALTURA_PADRAO_M} m; real
+            quando há pavimentos); bolinhas ficam no plano.
+          </div>
+          <div style={{ color: '#888', fontSize: 12 }}>
+            Só a área com prédios mapeados; endereços fora dela ocultos.
+          </div>
         </div>
       )}
 
