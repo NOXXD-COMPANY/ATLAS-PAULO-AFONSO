@@ -15,7 +15,7 @@ echo "==> 3/4 Backend (FastAPI em :8000)"
 if curl -sf http://127.0.0.1:8000/ >/dev/null 2>&1; then
   echo "  backend já rodando"
 else
-  nohup ./.venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8000 \
+  nohup ./.venv/bin/python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 \
     > /tmp/atlas-uvicorn.log 2>&1 &
   sleep 3
   echo "  backend OK"
