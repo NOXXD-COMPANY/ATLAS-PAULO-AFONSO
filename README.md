@@ -66,10 +66,11 @@ dados reais (Overture + QG/CNEFE)
 
 | Fonte | O que fornece | Volume |
 | --- | --- | --- |
-| `overture-...-building-*.geojson` | Polígono real de cada edificação | 8.382 prédios |
+| `overture-...-building-*.geojson` (janela) + `...-building-municipio.geojson` (município inteiro, mesma release) | Polígono real de cada edificação | 52.809 prédios no município (8.382 na janela original) |
 | `qg_810_endereco_*.json` (CNEFE/IBGE, município 2924009) | Endereços e estabelecimentos | 61.965 pontos |
+| `osm_buildings_paulo_afonso.geojson` (2ª fonte, via API Overpass/OSM — aberta, sem login) | Polígonos onde o Overture não cobre | 400 prédios (fallback; nenhum endereço novo adotado — o Overture municipal já cobria) |
 
-A tabela `buildings` tem uma linha por endereço QG (61.965) mais os prédios Overture sem nenhum endereço (3.316), totalizando **65.281 registros**. Portanto, essa contagem é de registros, não de prédios distintos: um mesmo polígono pode aparecer em várias linhas, uma por endereço.
+A tabela `buildings` tem uma linha por endereço QG (61.965) mais os prédios sem nenhum endereço, totalizando **87.951 registros**. 58.178 endereços (93,9%) caíram em polígono; restam 3.787 bolinhas.
 
 **Regras da junção espacial endereço × edificação:**
 
@@ -78,7 +79,7 @@ A tabela `buildings` tem uma linha por endereço QG (61.965) mais os prédios Ov
 3. Havendo mais de um candidato, escolhe o **mais próximo**.
 4. Endereço sem prédio vira um **círculo de ~5 m** ao redor do ponto.
 
-O CNEFE cobre Paulo Afonso inteira e o Overture só a janela do mapa, por isso apenas ~26% dos endereços têm polígono.
+O Overture agora cobre o município inteiro (recortado no contorno oficial): 93,9% dos endereços têm polígono; restam 3.787 bolinhas.
 
 **Tipo de uso**, em ordem de prioridade:
 
@@ -165,8 +166,9 @@ Arquitetura em **camadas**, com um módulo de carga em lote separado da aplicaç
 | Método e rota | Descrição | Respostas |
 | --- | --- | --- |
 | `GET /` | Verificação de saúde (`{"status": "ok", "service": "atlas-urbano-api"}`) | 200 |
-| `GET /api/buildings` | Todas as edificações como `FeatureCollection` GeoJSON | 200 |
+| `GET /api/buildings` | Edificações como `FeatureCollection` GeoJSON. Filtros opcionais: `?bbox=minLng,minLat,maxLng,maxLat` (usa o índice espacial), `?bairro=` (repete para vários), `?tipo=`, `?fonte=`. `?light=true` devolve só os campos de renderização. Paginação com `?limit=` (máx. 20000) e `?offset=` (ordem estável por `id`). Sem parâmetros, devolve tudo de uma vez (comportamento antigo) | 200, 422 (bbox/limite inválido) |
 | `GET /api/buildings/{building_id}` | Uma edificação como `Feature` GeoJSON | 200, 404 |
+| `GET /api/stats` | Agregados (`total`, `by_tipo`, `by_bairro`, `area_total_m2`, `area_media_m2`) com os mesmos filtros de `bbox`/`bairro`/`tipo`/`fonte` | 200, 422 |
 
 **Propriedades de cada Feature**
 
@@ -250,8 +252,8 @@ A coluna **Estado** é uma avaliação do código atual (MVP) contra a documenta
 | --- | --- | --- | --- | --- |
 | RNF01 | Custo total R$ 0,00 | Econômico | Atendido | Apenas dados e ferramentas abertos; tiles públicos do OSM e OpenFreeMap |
 | RNF02 | Reprodutibilidade a partir do pacote e das receitas | Manutenibilidade | Parcial | Há scripts e `requirements.txt`, mas as versões das dependências não estão fixadas e os dados brutos são manuais |
-| RNF03 | Cobertura de 100% do perímetro urbano processado | Completude | Pendente | O Overture cobre apenas a janela do mapa |
-| RNF04 | Taxa de associação endereço–edificação ≥ 85% (piloto: 93%) | Qualidade de dados | Pendente | Hoje ~26% de **todos** os endereços caem em polígono; a taxa deve ser medida só dentro da área coberta pelo Overture |
+| RNF03 | Cobertura de 100% do perímetro urbano processado | Completude | Parcial | Overture municipal (52.809 prédios) + fallback OSM (400); faltam os ~3,8 mil endereços ainda sem polígono |
+| RNF04 | Taxa de associação endereço–edificação ≥ 85% (piloto: 93%) | Qualidade de dados | Atendido | 93,9% dos endereços caem em polígono (58.178 de 61.965) |
 | RNF05 | Nenhum dado pessoal armazenado ou publicado | Privacidade | A verificar | Guarda-se endereço e estabelecimento; conferir se `estabelecimento` não expõe dados pessoais |
 | RNF06 | Apenas fontes com licença compatível (vedados Google Maps/Street View, DNE dos Correios, Mapillary) | Legal | Atendido | Fontes em uso: OpenStreetMap, Overture e IBGE |
 | RNF07 | Toda estatística publicada carrega fonte, método e limitação | Confiabilidade | Parcial | O painel de detalhes mostra a fonte por edificação; o relatório ainda não exibe método e limitação |
@@ -291,13 +293,13 @@ Atores: **Cliente** (consulta mapa e relatórios) e **Equipe Mantenedora** (carg
 | **PDF via `window.print()` + CSS `@media print`** | Gera o relatório sem biblioteca extra nem backend de relatórios. | Pouco controle de layout |
 | **MariaDB local isolado por script** | Reprodutibilidade em ambiente restrito, sem exigir serviço instalado. | Depende de Linux/Bash e do `mariadbd` instalado |
 
-**Recursos 3D:** prédios com `num_pavimentos` (33 edificações do Overture) recebem extrusão de `pavimentos × 3 m`; o restante permanece 2D. Os prédios 3D da base OSM vêm de fonte vetorial (OpenFreeMap). Incline a câmera (botão direito, arrastar) para ver.
+**Recursos 3D:** todo volume 3D é uma feature nossa extrusada pelo deck.gl — portanto tem sempre a cor do tipo e, ao clicar, o endereço. Prédios com `num_pavimentos` usam `pavimentos × 3 m` (dado do Overture); o restante usa altura ilustrativa de 5 m. Não há camada 3D externa (a anterior, do OpenFreeMap/OSM, era cinza e sem vínculo com nossos endereços).
 
 ## Limitações conhecidas
 
-- **Sem paginação nem filtro no servidor**: `GET /api/buildings` devolve ~65 mil features de uma vez. Filtros e agregações do relatório rodam no navegador.
-- **"Edificação" é ambígua**: a tabela tem uma linha por endereço, então 65.281 registros não são 65.281 prédios. O relatório rotula a contagem como "Edificações".
-- **Cobertura parcial de polígonos**: só ~26% dos endereços caem em um prédio do Overture (ver RNF03 e RNF04).
+- **Carga inicial ainda é a cidade inteira**: o frontend busca tudo em páginas de 5 mil features (~13 MB cada, com progresso na tela e pintura incremental), em vez de um único JSON de ~200 MB (~18 páginas). Filtros e agregações do relatório rodam no navegador.
+- **"Edificação" é ambígua**: a tabela tem uma linha por endereço, então 87.951 registros não são 87.951 prédios. O relatório rotula a contagem como "Edificações".
+- **Prédios sem endereço nem tipo** (~26 mil): o Overture municipal trouxe a forma, mas sem uso conhecido (ficam `desconhecido` até conferência de campo ou 2ª fonte com atributo).
 - **Acoplamento por *magic string***: o frontend identifica "endereço sem prédio" pelo valor `fonte = 'QG/CNEFE'`. Um campo explícito (ex.: `tem_poligono`) seria mais robusto.
 - **ETL monolítico e destrutivo**: leitura, cruzamento, transformação e carga num único script, sem transação protegendo o estado anterior.
 - **Credenciais fixas e duplicadas** (`atlas`/`atlas`) em `config.py` e `import_data.py`; deveriam vir de variáveis de ambiente, numa configuração única.
