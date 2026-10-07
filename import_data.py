@@ -13,9 +13,14 @@ from shapely.ops import transform
 from shapely import strtree
 
 DATA_DIR = "data/raw"
-OVERTURE_BUILDINGS = (
-    f"{DATA_DIR}/overture/overture-2026-08-19.0-building--38.236,-9.410,-38.212,-9.395.geojson"
-)
+OVERTURE_FILES = [
+    f"{DATA_DIR}/overture/overture-2026-08-19.0-building--38.236,-9.410,-38.212,-9.395.geojson",
+    f"{DATA_DIR}/overture/overture-2026-08-19.0-building-municipio.geojson",
+]
+# 2ª fonte (API aberta Overpass/OSM, sem login): fallback onde o Overture
+# não tem polígono. Ausência do arquivo só desliga o fallback.
+OSM_BUILDINGS = f"{DATA_DIR}/osm/osm_buildings_paulo_afonso.geojson"
+MUNICIPIO_BOUNDARY = f"{DATA_DIR}/municipio_boundary.geojson"
 QG_ENDERECOS = f"{DATA_DIR}/qg/qg_810_endereco_Munic2924009.json"
 MUNICIPIO = "2924009"  # Paulo Afonso/BA
 
@@ -104,9 +109,59 @@ def _area_m2(polygon) -> float:
 
 
 def load_buildings():
-    with open(OVERTURE_BUILDINGS) as f:
-        fc = json.load(f)
-    return fc["features"]
+    """Junta os arquivos Overture (dedupe por id) e recorta no município."""
+    merged = {}
+    for path in OVERTURE_FILES:
+        try:
+            with open(path) as f:
+                fc = json.load(f)
+        except FileNotFoundError:
+            print(f"  (aviso: {path} não encontrado, pulando)")
+            continue
+        for feat in fc["features"]:
+            merged.setdefault(feat["id"], feat)
+    features = list(merged.values())
+    try:
+        boundary = boundary_shape()
+        from shapely.prepared import prep
+        prepared = prep(boundary)
+        before = len(features)
+        features = [b for b in features
+                    if prepared.intersects(shape(b["geometry"]))]
+        print(f"  {before} prédios no bbox, {len(features)} dentro do município")
+    except FileNotFoundError:
+        print("  (aviso: contorno do município ausente, sem recorte)")
+    return features
+
+
+def boundary_shape():
+    """Contorno do município (FeatureCollection ou Feature único)."""
+    with open(MUNICIPIO_BOUNDARY) as f:
+        doc = json.load(f)
+    if doc.get("type") == "FeatureCollection":
+        doc = doc["features"][0]
+    return shape(doc["geometry"])
+
+
+def load_osm_buildings():
+    """2ª fonte: polígonos do OSM (fallback). [] se o arquivo não existir."""
+    try:
+        with open(OSM_BUILDINGS) as f:
+            fc = json.load(f)
+    except FileNotFoundError:
+        return []
+    features = fc["features"]
+    try:
+        boundary = boundary_shape()
+        from shapely.prepared import prep
+        prepared = prep(boundary)
+        before = len(features)
+        features = [b for b in features
+                    if prepared.intersects(shape(b["geometry"]))]
+        print(f"  OSM: {before} no bbox, {len(features)} dentro do município")
+    except FileNotFoundError:
+        pass
+    return features
 
 
 def load_qg_points():
@@ -128,19 +183,14 @@ def best_type(qg_props, overture_props):
     return "desconhecido"
 
 
-def relate_points_to_buildings(buildings, points):
-    polys = []
-    for b in buildings:
-        g = shape(b["geometry"])
-        if not g.is_valid:
-            g = g.buffer(0)
-        polys.append(g)
-
+def match_points(polys, points, q_indices=None):
+    """Associa pontos a polígonos: contém → tolerância de ~15 m → mais próximo."""
     tree = strtree.STRtree(polys)
-
-    point_to_building = {}
-    for qi, feat in enumerate(points):
-        x, y = feat["geometry"]["coordinates"]
+    if q_indices is None:
+        q_indices = range(len(points))
+    point_to_poly = {}
+    for qi in q_indices:
+        x, y = points[qi]["geometry"]["coordinates"]
         pt = Point(x, y)
         hits = tree.query(pt, predicate="contains")
         if len(hits) == 0:
@@ -149,8 +199,19 @@ def relate_points_to_buildings(buildings, points):
             continue
         cands = [int(i) for i in hits]
         best = min(cands, key=lambda bi: pt.distance(polys[bi]))
-        point_to_building[qi] = best
+        point_to_poly[qi] = best
+    return point_to_poly
 
+
+def relate_points_to_buildings(buildings, points):
+    polys = []
+    for b in buildings:
+        g = shape(b["geometry"])
+        if not g.is_valid:
+            g = g.buffer(0)
+        polys.append(g)
+
+    point_to_building = match_points(polys, points)
     building_to_points = {}
     for qi, bi in point_to_building.items():
         building_to_points.setdefault(bi, []).append(qi)
@@ -172,6 +233,21 @@ def main():
         qi: bi for bi, qis in building_to_points.items() for qi in qis
     }
     print(f"  {len(point_to_building)} endereços dentro de prédios")
+
+    print("2ª fonte (OSM) para os endereços restantes...")
+    osm_features = load_osm_buildings()
+    osm_polys = []
+    for b in osm_features:
+        g = shape(b["geometry"])
+        if not g.is_valid:
+            g = g.buffer(0)
+        osm_polys.append(g)
+    unmatched = [qi for qi in range(len(qg_features))
+                 if qi not in point_to_building]
+    osm_match = (match_points(osm_polys, qg_features, unmatched)
+                 if osm_polys else {})
+    print(f"  OSM: {len(osm_features)} polígonos, "
+          f"{len(osm_match)} endereços adotados")
 
     print("Gravando no MySQL...")
     conn = connect_db()
@@ -203,6 +279,13 @@ def main():
                     geom = polys[bi]
                     num_pav = oprops.get("num_floors")
                     fonte = fonte_of(oprops)
+                elif qi in osm_match:
+                    oi = osm_match[qi]
+                    otags = osm_features[oi]["properties"] or {}
+                    oprops = {"class": otags.get("building")}
+                    geom = osm_polys[oi]
+                    num_pav = None
+                    fonte = "OpenStreetMap"
                 else:
                     oprops = {}
                     x, y = qf["geometry"]["coordinates"]
@@ -225,6 +308,21 @@ def main():
                     b["id"], json.dumps(mapping(geom)), _area_m2(geom),
                     best_type(None, props),
                     None, None, None, props.get("num_floors"), fonte_of(props),
+                ))
+
+            osm_to_points = {}
+            for qi, oi in osm_match.items():
+                osm_to_points.setdefault(oi, []).append(qi)
+            for oi, o in enumerate(osm_features):
+                if oi in osm_to_points:
+                    continue
+                otags = o["properties"] or {}
+                oid = str(otags.get("osm_id", oi)).replace("/", "-")
+                batch.append((
+                    f"osm-{oid}", json.dumps(mapping(osm_polys[oi])),
+                    _area_m2(osm_polys[oi]),
+                    best_type(None, {"class": otags.get("building")}),
+                    None, None, None, None, "OpenStreetMap",
                 ))
 
             # SRID 0 em toda a tabela (tudo em lon/lat).
