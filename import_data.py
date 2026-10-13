@@ -25,9 +25,9 @@ QG_ENDERECOS = f"{DATA_DIR}/qg/qg_810_endereco_Munic2924009.json"
 MUNICIPIO = "2924009"  # Paulo Afonso/BA
 
 DB_HOST = "127.0.0.1"
-DB_PORT = 3306
-DB_USER = "atlas"
-DB_PASSWORD = "atlas"
+DB_PORT = 3307
+DB_USER = "root"
+DB_PASSWORD = "ar120604"
 DB_NAME = "atlas_urbano"
 
 # ~15 m de tolerância na borda (ex.: porta na fachada, erro de GPS).

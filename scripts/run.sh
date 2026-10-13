@@ -9,7 +9,7 @@ echo "==> 1/4 Banco de dados"
 bash scripts/db.sh start
 
 echo "==> 2/4 Importação dos dados reais para o MySQL"
-"./.venv/bin/python" import_data.py
+"./.venv/Scripts/python" import_data.py
 
 echo "==> 3/4 Backend (FastAPI em :8000)"
 if curl -sf http://127.0.0.1:8000/ >/dev/null 2>&1; then
