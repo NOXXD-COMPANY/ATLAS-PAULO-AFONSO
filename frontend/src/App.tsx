@@ -224,13 +224,22 @@ export default function App() {
     return () => ctrl.abort();
   }, [selected]);
 
-  const visiblePages = useMemo<Predio[][]>(() => {
-    // 'no-selecionado': isola o prédio clicado. Sem seleção, vazio.
-    if (modoPontos === 'no-selecionado') return selected ? [[selected]] : [];
-    if (!showPontos)
-      return pages.map((p) => p.filter((f) => f.properties.fonte !== FONTE_PONTO));
-    return pages;
-  }, [pages, showPontos, modoPontos, selected]);
+  // Separado da seleção: clicar num prédio não refiltra nem reprocessa a cidade.
+  const filteredPages = useMemo<Predio[][]>(
+    () =>
+      showPontos
+        ? pages
+        : pages.map((p) => p.filter((f) => f.properties.fonte !== FONTE_PONTO)),
+    [pages, showPontos],
+  );
+
+  // 'no-selecionado': isola o prédio clicado. Sem seleção, mostra tudo
+  // para ainda ter onde clicar.
+  const visiblePages = useMemo<Predio[][]>(
+    () =>
+      modoPontos === 'no-selecionado' && selected ? [[selected]] : filteredPages,
+    [modoPontos, selected, filteredPages],
+  );
 
   const layers = useMemo(() => {
     const predios = visiblePages.map(
