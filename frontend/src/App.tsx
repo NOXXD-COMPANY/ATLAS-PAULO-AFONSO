@@ -1,77 +1,86 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as maplibregl from 'maplibre-gl';
-import type {
-  Map as MapLibreMap,
-  MapLayerMouseEvent,
-  StyleSpecification,
-} from 'maplibre-gl';
+import type { Map as MapLibreMap, MapLayerMouseEvent } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { MapboxOverlay } from '@deck.gl/mapbox';
-import { GeoJsonLayer } from '@deck.gl/layers';
-import { TIPOS_ORDEM, corDoTipo, FONTE_PONTO } from './constants';
-import Report from './Report';
+import { GeoJsonLayer, ScatterplotLayer } from '@deck.gl/layers';
+import {
+  API_URL,
+  TIPOS_ORDEM,
+  corDoTipo,
+  fetchJson,
+  FONTE_PONTO,
+} from './constants';
+import Report, { IconeFechar } from './Report';
 
-interface BuildingProps {
-  id: string;
-  area_m2: number | null;
+interface PredioProps {
   tipo: string;
+  fonte: string | null;
+  num_pavimentos: number | null;
+  /** Quantos endereços do CNEFE caem neste prédio. */
+  n: number;
+  /** Centro do prédio [lon, lat]: onde o endereço é desenhado. */
+  ponto: [number, number];
+}
+
+type Predio = {
+  type: 'Feature';
+  id: string;
+  geometry: { type: string; coordinates: any };
+  properties: PredioProps;
+};
+
+interface Endereco {
+  id: string;
   endereco: string | null;
   bairro: string | null;
   estabelecimento: string | null;
-  num_pavimentos: number | null;
-  fonte: string | null;
+  tipo: string;
 }
 
-type GeoJsonFeature = {
-  type: 'Feature';
-  id?: string | number;
-  geometry: { type: string; coordinates: any };
-  properties: BuildingProps | Record<string, unknown>;
+type Detalhe = {
+  id: string;
+  erro: boolean;
+  area_m2?: number | null;
+  enderecos?: Endereco[];
 };
-
-export type GeoJsonFC = { type: 'FeatureCollection'; features: GeoJsonFeature[] };
-
-const API_URL = import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:8000';
 
 // Altura ilustrativa (m) quando o número de pavimentos é desconhecido.
 // Prédios com `num_pavimentos` usam pavimentos × 3 m (dado real do Overture).
 const ALTURA_PADRAO_M = 5;
 
-// Carga paginada: ~5 mil features por requisição em vez de um único JSON
-// de ~200 MB, para o mapa ir pintando aos poucos sem travar o navegador.
-const PAGE_SIZE = 5000;
+// ~10 mil prédios por requisição: o mapa pinta aos poucos e cada página
+// vira uma camada própria, que não é reprocessada quando chega a próxima.
+const PAGE_SIZE = 10000;
 
-// Mapa base: OpenStreetMap (tiles públicos, sem chave de API).
-const OSM_STYLE: StyleSpecification = {
-  version: 8,
-  sources: {
-    osm: {
-      type: 'raster',
-      tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
-      tileSize: 256,
-      attribution: '© OpenStreetMap contributors',
-      maxzoom: 19,
-    },
-  },
-  layers: [{ id: 'osm', type: 'raster', source: 'osm' }],
-};
+// Mapa base vetorial gratuito, sem chave e sem limite de uso (OpenFreeMap).
+const MAPA_BASE = 'https://tiles.openfreemap.org/styles/positron';
 
-function boundingBox(fc: GeoJsonFC | null): [[number, number], [number, number]] { let minLon = Infinity;
+function elevacao(p: PredioProps): number {
+  // Bolinhas (endereço sem prédio) ficam no plano: sem volume.
+  if (p.fonte === FONTE_PONTO) return 0;
+  return typeof p.num_pavimentos === 'number' && p.num_pavimentos > 0
+    ? p.num_pavimentos * 3
+    : ALTURA_PADRAO_M;
+}
+
+function corCss(tipo: string): string {
+  return `rgb(${corDoTipo(tipo).slice(0, 3).join(',')})`;
+}
+
+function boundingBox(pages: Predio[][]): [[number, number], [number, number]] {
+  let minLon = Infinity;
   let minLat = Infinity;
   let maxLon = -Infinity;
   let maxLat = -Infinity;
-  const visit = (coords: number[][]) => {
-    for (const [lon, lat] of coords) {
+  for (const page of pages) {
+    for (const f of page) {
+      const [lon, lat] = f.properties.ponto;
       minLon = Math.min(minLon, lon);
       maxLon = Math.max(maxLon, lon);
       minLat = Math.min(minLat, lat);
       maxLat = Math.max(maxLat, lat);
     }
-  };
-  for (const f of fc?.features ?? []) {
-    const g = f.geometry as { type: string; coordinates: any[] };
-    if (g.type === 'Polygon') visit(g.coordinates[0]);
-    else if (g.type === 'MultiPolygon') for (const p of g.coordinates) visit(p[0]);
   }
   return [
     [minLon, minLat],
@@ -83,9 +92,11 @@ export default function App() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const overlayRef = useRef<MapboxOverlay | null>(null);
+  const userMovedRef = useRef(false);
 
-  const [data, setData] = useState<GeoJsonFC | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [pages, setPages] = useState<Predio[][]>([]);
+  const [selected, setSelected] = useState<Predio | null>(null);
+  const [detalhe, setDetalhe] = useState<Detalhe | null>(null);
   const [loading, setLoading] = useState(true);
   const [progress, setProgress] = useState({ loaded: 0, total: 0 });
   const [error, setError] = useState<string | null>(null);
@@ -94,31 +105,42 @@ export default function App() {
     'todos',
   );
   const [showReport, setShowReport] = useState(false);
-  const didFitRef = useRef(false);
 
   useEffect(() => {
     if (!mapContainer.current) return;
     const map = new maplibregl.Map({
       container: mapContainer.current,
-      style: OSM_STYLE,
+      style: MAPA_BASE,
       center: [-38.223898, -9.402317],
       zoom: 14,
       maxPitch: 85,
     });
-    // O 3D é 100% dos nossos dados (camada deck.gl abaixo): cada volume
-    // extrusado É a feature (polígono ou bolinha), logo carrega sempre o
-    // endereço e a cor do tipo. Sem camada 3D externa.
-    const overlay = new MapboxOverlay({
-      layers: [],
+    // Os prédios do mapa base (OSM) não batem com os nossos: escondidos
+    // para não aparecer contorno duplicado ao lado de cada edificação.
+    map.on('load', () => {
+      for (const l of map.getStyle().layers ?? []) {
+        if (l.id.includes('building')) {
+          map.setLayoutProperty(l.id, 'visibility', 'none');
+        }
+      }
     });
+    map.on('movestart', (e) => {
+      if (e.originalEvent) userMovedRef.current = true;
+    });
+    // O 3D é 100% dos nossos dados (camadas deck.gl abaixo): cada volume
+    // extrusado É um prédio, logo carrega sempre a cor do tipo e os endereços.
+    const overlay = new MapboxOverlay({ layers: [] });
     map.addControl(overlay);
     overlayRef.current = overlay;
     mapRef.current = map;
 
     const onClick = (e: MapLayerMouseEvent) => {
-      const info = overlay.pickObject({ x: e.point.x, y: e.point.y });
-      const props = info?.object?.properties as BuildingProps | undefined;
-      setSelectedId(props?.id ?? null);
+      const info = overlay.pickObject({ x: e.point.x, y: e.point.y, radius: 4 });
+      const obj = info?.object as Predio | undefined;
+      // Cópia: clicar de novo no mesmo prédio refaz a busca (ex.: após erro).
+      setSelected(obj ? { ...obj } : null);
+      // Painel e relatório ocupam o mesmo canto: um fecha o outro.
+      if (obj) setShowReport(false);
     };
     map.on('click', onClick);
 
@@ -131,159 +153,136 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function fetchJson(url: string, attempts: number): Promise<any> {
-      let lastErr: unknown = null;
-      for (let attempt = 1; attempt <= attempts; attempt++) {
-        try {
-          const res = await fetch(url);
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          return await res.json();
-        } catch (err) {
-          lastErr = err;
-          if (attempt < attempts)
-            await new Promise((r) => setTimeout(r, 2000));
-        }
-      }
-      throw lastErr;
-    }
+    const ctrl = new AbortController();
 
     async function load() {
       try {
-        // Total para a barra de progresso (o backend pode estar subindo).
-        // em_cobertura: esconde as bolinhas fora da área com prédios.
+        // Total para a barra de progresso; em_cobertura esconde as bolinhas
+        // fora da área com prédios.
         const stats = await fetchJson(
           `${API_URL}/api/stats?em_cobertura=true`,
           5,
+          ctrl.signal,
         );
-        const total =
-          typeof stats?.total === 'number' && stats.total > 0
-            ? stats.total
-            : 0;
-        if (!cancelled && total > 0) setProgress({ loaded: 0, total });
+        const total = typeof stats?.predios === 'number' ? stats.predios : 0;
+        setProgress({ loaded: 0, total });
 
-        // Páginas acumuladas: o mapa pinta cada lote sem congelar a tela.
-        const all: GeoJsonFeature[] = [];
-        let offset = 0;
-        for (;;) {
-          const fc = (await fetchJson(
-            `${API_URL}/api/buildings?em_cobertura=true&limit=${PAGE_SIZE}&offset=${offset}`,
+        for (let offset = 0; ; ) {
+          const fc = await fetchJson(
+            `${API_URL}/api/predios?em_cobertura=true&limit=${PAGE_SIZE}&offset=${offset}`,
             3,
-          )) as GeoJsonFC;
-          if (!fc || !Array.isArray(fc.features)) {
+            ctrl.signal,
+          );
+          const features = fc?.features as Predio[] | undefined;
+          if (!Array.isArray(features)) {
             throw new Error('resposta inválida da API');
           }
-          all.push(...fc.features);
-          offset += fc.features.length;
-          if (cancelled) return;
+          offset += features.length;
+          if (features.length > 0) setPages((p) => [...p, features]);
           setProgress({ loaded: offset, total: Math.max(total, offset) });
-          setData({ type: 'FeatureCollection', features: [...all] });
-          if (fc.features.length < PAGE_SIZE) break;
+          if (features.length < PAGE_SIZE) break;
         }
       } catch (err) {
-        if (!cancelled)
+        if (!ctrl.signal.aborted)
           setError(err instanceof Error ? err.message : 'Erro ao carregar dados');
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!ctrl.signal.aborted) setLoading(false);
       }
     }
     load();
-    return () => {
-      cancelled = true;
-    };
+    return () => ctrl.abort();
   }, []);
 
+  // Enquadra tudo só no fim, e só se a pessoa ainda não mexeu no mapa.
   useEffect(() => {
-    if (!data || !mapRef.current || didFitRef.current) return;
-    const [[swLon, swLat], [neLon, neLat]] = boundingBox(data);
-    mapRef.current.fitBounds(
-      [
-        [swLon, swLat],
-        [neLon, neLat],
-      ],
-      { padding: 60, duration: 0 },
-    );
-    didFitRef.current = true;
-  }, [data]);
+    if (loading || pages.length === 0 || !mapRef.current) return;
+    if (userMovedRef.current) return;
+    mapRef.current.fitBounds(boundingBox(pages), { padding: 60, duration: 0 });
+  }, [loading, pages]);
 
-  const selectedFeature = useMemo<GeoJsonFeature | null>(() => {
-    if (!selectedId || !data) return null;
-    // Baseado nos dados completos para o painel não sumir com os filtros.
-    return data.features.find(
-      (f) => String(f.properties['id']) === selectedId,
-    ) ?? null;
-  }, [selectedId, data]);
+  // Detalhe sob demanda: os endereços só viajam quando o prédio é clicado.
+  useEffect(() => {
+    if (!selected) return;
+    const ctrl = new AbortController();
+    const id = selected.id;
+    fetchJson(
+      `${API_URL}/api/predios/${encodeURIComponent(id)}`,
+      2,
+      ctrl.signal,
+    )
+      .then((f) =>
+        setDetalhe({
+          id,
+          erro: false,
+          area_m2: f?.properties?.area_m2 ?? null,
+          enderecos: f?.properties?.enderecos ?? [],
+        }),
+      )
+      .catch(() => {
+        if (!ctrl.signal.aborted) setDetalhe({ id, erro: true });
+      });
+    return () => ctrl.abort();
+  }, [selected]);
 
-  // Chave canônica da geometria: linhas que compartilham o polígono
-  // (1 telhado × N endereços) têm a mesma chave.
-  const geomKeys = useMemo(
-    () =>
-      data?.features.map((f) => JSON.stringify(f.geometry.coordinates)) ??
-      [],
-    [data],
-  );
-  const selectedGeomKey = selectedFeature
-    ? JSON.stringify(selectedFeature.geometry.coordinates)
-    : null;
-
-  const visibleData = useMemo<GeoJsonFC | null>(() => {
-    if (!data) return null;
-    if (modoPontos === 'todos') {
-      if (showPontos) return data;
-      return {
-        type: 'FeatureCollection',
-        features: data.features.filter(
-          (f) => f.properties['fonte'] !== FONTE_PONTO,
-        ),
-      };
-    }
-    // 'no-selecionado': isola o prédio clicado e seus endereços
-    // (as linhas que repetem a mesma geometria). Sem seleção, vazio.
-    if (selectedGeomKey == null)
-      return { type: 'FeatureCollection', features: [] };
-    return {
-      type: 'FeatureCollection',
-      features: data.features.filter((_, i) => geomKeys[i] === selectedGeomKey),
-    };
-  }, [data, showPontos, modoPontos, geomKeys, selectedGeomKey]);
+  const visiblePages = useMemo<Predio[][]>(() => {
+    // 'no-selecionado': isola o prédio clicado. Sem seleção, vazio.
+    if (modoPontos === 'no-selecionado') return selected ? [[selected]] : [];
+    if (!showPontos)
+      return pages.map((p) => p.filter((f) => f.properties.fonte !== FONTE_PONTO));
+    return pages;
+  }, [pages, showPontos, modoPontos, selected]);
 
   const layers = useMemo(() => {
-    const buildings = new GeoJsonLayer({
-      id: 'buildings',
-      // `as any`: o tipo local é compatível com o esperado pelo deck.gl.
-      data: (visibleData ?? { type: 'FeatureCollection', features: [] }) as any,
-      pickable: true,
-      stroked: true,
-      filled: true,
-      extruded: true,
-      wireframe: false,
-      getElevation: (f: any) => {
-        // Bolinhas (endereço sem prédio) ficam no plano: sem volume.
-        if (f.properties?.fonte === FONTE_PONTO) return 0;
-        const pav = f.properties?.num_pavimentos;
-        return typeof pav === 'number' && pav > 0
-          ? pav * 3
-          : ALTURA_PADRAO_M;
-      },
-      getFillColor: (f: any) => corDoTipo(f.properties?.tipo),
-      getLineColor: [45, 45, 45, 140],
-      lineWidthMinPixels: 0.5,
-    });
+    const predios = visiblePages.map(
+      (data, i) =>
+        new GeoJsonLayer({
+          id: `predios-${i}`,
+          // `as any`: o tipo local é compatível com o esperado pelo deck.gl.
+          data: data as any,
+          pickable: true,
+          filled: true,
+          extruded: true,
+          wireframe: false,
+          getElevation: (f: any) => elevacao(f.properties),
+          getFillColor: (f: any) => corDoTipo(f.properties.tipo),
+        }),
+    );
+
+    // Endereço desenhado no centro do telhado. Raio em metros: some sozinho
+    // com o zoom afastado, sem precisar acompanhar o zoom no React.
+    const enderecos = visiblePages.map(
+      (data, i) =>
+        new ScatterplotLayer<Predio>({
+          id: `enderecos-${i}`,
+          data,
+          pickable: true,
+          getPosition: (f) => [...f.properties.ponto, elevacao(f.properties) + 0.3],
+          getRadius: (f) => (f.properties.n > 0 ? 1.2 : 0),
+          radiusUnits: 'meters',
+          radiusMaxPixels: 5,
+          stroked: true,
+          getFillColor: [255, 255, 255, 235],
+          getLineColor: [30, 30, 30, 200],
+          lineWidthUnits: 'pixels',
+          getLineWidth: 1,
+        }),
+    );
 
     const highlight = new GeoJsonLayer({
       id: 'selected-building',
-      data: (selectedFeature ? [selectedFeature] : []) as any,
+      data: (selected ? [selected] : []) as any,
       pickable: false,
       stroked: true,
       filled: false,
       getLineColor: [20, 20, 20, 255],
       lineWidthMinPixels: 3,
       lineWidthMaxPixels: 5,
+      // Contorno por cima do 3D: não some atrás do telhado.
+      parameters: { depthCompare: 'always' },
     });
 
-    return [buildings, highlight];
-  }, [visibleData, selectedFeature]);
+    return [...predios, ...enderecos, highlight];
+  }, [visiblePages, selected]);
 
   useEffect(() => {
     overlayRef.current?.setProps({ layers });
@@ -291,76 +290,61 @@ export default function App() {
 
   const legenda = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const f of visibleData?.features ?? []) {
-      const t = String(f.properties['tipo'] ?? 'desconhecido');
-      counts.set(t, (counts.get(t) ?? 0) + 1);
+    for (const page of visiblePages) {
+      for (const f of page) {
+        const t = f.properties.tipo ?? 'desconhecido';
+        counts.set(t, (counts.get(t) ?? 0) + 1);
+      }
     }
     return TIPOS_ORDEM.map((t) => ({ tipo: t, n: counts.get(t) ?? 0 })).filter(
       (x) => x.n > 0,
     );
-  }, [visibleData]);
+  }, [visiblePages]);
 
-  const total = visibleData?.features.length ?? 0;
+  const total = legenda.reduce((s, x) => s + x.n, 0);
 
-  const closePanel = useCallback(() => setSelectedId(null), []);
+  const closePanel = useCallback(() => setSelected(null), []);
 
-  const P = selectedFeature?.properties as BuildingProps | undefined;
+  const P = selected?.properties;
+  const D = detalhe && selected && detalhe.id === selected.id ? detalhe : null;
+  const pct =
+    progress.total > 0
+      ? Math.min(1, progress.loaded / progress.total)
+      : 0;
 
   return (
     <>
       <div ref={mapContainer} className="map-container" />
 
-      {!loading && visibleData && (
-        <button
-          className="report-button"
-          onClick={() => setShowReport(true)}
-        >
-          Relatório
-        </button>
-      )}
+      <button
+        className="report-button"
+        onClick={() => {
+          setSelected(null);
+          setShowReport(true);
+        }}
+      >
+        Relatório
+      </button>
 
-      {loading && (
-        <div
-          style={{
-            position: 'absolute',
-            top: '50%',
-            left: '50%',
-            transform: 'translate(-50%,-50%)',
-            background: 'rgba(255,255,255,0.9)',
-            padding: '12px 20px',
-            borderRadius: 8,
-            zIndex: 20,
-            boxShadow: '0 1px 6px rgba(0,0,0,0.25)',
-          }}
-        >
-          Carregando prédios…
-          {progress.total > 0 && (
-            <>
-              <br />
-              {progress.loaded.toLocaleString('pt-BR')} de{' '}
-              {progress.total.toLocaleString('pt-BR')} (
-              {Math.round((progress.loaded / progress.total) * 100)}%)
-            </>
-          )}
+      {loading && !error && (
+        <div className="loading" role="status">
+          <span>
+            Carregando prédios
+            {progress.total > 0 &&
+              ` · ${progress.loaded.toLocaleString('pt-BR')} de ${progress.total.toLocaleString('pt-BR')}`}
+          </span>
+          <div className="loading-bar" aria-hidden="true">
+            <div style={{ transform: `scaleX(${pct})` }} />
+          </div>
         </div>
       )}
 
       {error && (
-        <div
-          style={{
-            position: 'absolute',
-            top: 12,
-            left: 12,
-            background: 'rgba(255,235,235,0.95)',
-            color: '#b71c1c',
-            padding: 10,
-            borderRadius: 8,
-            zIndex: 20,
-          }}
-        >
-          Erro ao carregar: {error}
+        <div className="error-box" role="alert">
+          Não foi possível carregar os prédios ({error}).
           <br />
-          Confirme que o backend FastAPI está em {API_URL}.
+          Confirme que o backend FastAPI está rodando em {API_URL} e recarregue
+          a página.
         </div>
       )}
 
@@ -398,8 +382,8 @@ export default function App() {
                 />
                 Só o prédio selecionado
               </label>
-              {modoPontos === 'no-selecionado' && !selectedFeature && (
-                <span style={{ color: '#888', fontSize: 12 }}>
+              {modoPontos === 'no-selecionado' && !selected && (
+                <span className="legend-note">
                   Clique em um prédio para isolar os endereços dele
                 </span>
               )}
@@ -409,69 +393,89 @@ export default function App() {
             <div key={tipo} className="legend-item">
               <span
                 className="legend-swatch"
-                style={{
-                  background: `rgb(${corDoTipo(tipo).slice(0, 3).join(',')})`,
-                }}
+                style={{ background: corCss(tipo) }}
               />
               <span>{tipo}</span>
-              <span style={{ marginLeft: 'auto', color: '#888' }}>{n}</span>
+              <span className="legend-count">{n.toLocaleString('pt-BR')}</span>
             </div>
           ))}
-          <div style={{ color: '#888', fontSize: 12, marginTop: 4 }}>
+          <div className="legend-note">
             Prédios em 3D (altura ilustrativa de {ALTURA_PADRAO_M} m; real
-            quando há pavimentos); bolinhas ficam no plano.
+            quando há pavimentos). O ponto branco marca o endereço, no centro
+            do prédio.
           </div>
-          <div style={{ color: '#888', fontSize: 12 }}>
+          <div className="legend-note">
             Só a área com prédios mapeados; endereços fora dela ocultos.
           </div>
         </div>
       )}
 
-      {!selectedFeature && !loading && (
-        <div className="empty-hint">
-          Clique em um prédio para ver os dados
-        </div>
+      {!selected && !loading && !error && (
+        <div className="empty-hint">Clique em um prédio para ver os dados</div>
       )}
 
-      {showReport && visibleData && (
-        <Report data={visibleData} onClose={() => setShowReport(false)} />
-      )}
+      {showReport && <Report onClose={() => setShowReport(false)} />}
 
       {P && (
         <div className="info-panel">
           <button className="close" onClick={closePanel} aria-label="Fechar">
-            ×
+            <IconeFechar />
           </button>
           <h2>Edificação</h2>
           <dl>
-            <dt>Endereço</dt>
-            <dd>{P.endereco ?? 'Não informado'}</dd>
-            <dt>Bairro</dt>
-            <dd>{P.bairro ?? 'Não informado'}</dd>
-            <dt>Estabelecimento</dt>
-            <dd>{P.estabelecimento ?? 'Não informado'}</dd>
             <dt>Tipo</dt>
             <dd>
-              <span
-                className="tipo-badge"
-                style={{
-                  background: `rgb(${corDoTipo(P.tipo).slice(0, 3).join(',')})`,
-                }}
-              >
+              <span className="tipo-badge" style={{ background: corCss(P.tipo) }}>
                 {P.tipo}
               </span>
             </dd>
             <dt>Área</dt>
             <dd>
-              {P.area_m2 != null
-                ? `${Math.round(P.area_m2).toLocaleString('pt-BR')} m²`
-                : 'Não informado'}
+              {D?.area_m2 != null
+                ? `${Math.round(D.area_m2).toLocaleString('pt-BR')} m²`
+                : D
+                  ? 'Não informado'
+                  : '…'}
             </dd>
             <dt>Pavimentos</dt>
             <dd>{P.num_pavimentos ?? 'Não informado'}</dd>
             <dt>Fonte</dt>
             <dd>{P.fonte ?? 'Não informado'}</dd>
           </dl>
+
+          <h3>
+            {P.n === 1 ? '1 endereço' : `${P.n.toLocaleString('pt-BR')} endereços`}
+          </h3>
+          {P.n === 0 ? (
+            <p className="panel-note">
+              Nenhum endereço do CNEFE ligado a este prédio.
+            </p>
+          ) : !D ? (
+            <p className="panel-note">Carregando endereços…</p>
+          ) : D.erro ? (
+            <p className="panel-note">
+              Não foi possível carregar os endereços. Clique no prédio de novo.
+            </p>
+          ) : (
+            <ul className="enderecos">
+              {D.enderecos?.map((e) => (
+                <li key={e.id}>
+                  <span
+                    className="legend-swatch"
+                    style={{ background: corCss(e.tipo) }}
+                    title={e.tipo}
+                  />
+                  <div>
+                    <strong>{e.endereco ?? 'Sem logradouro'}</strong>
+                    <span>
+                      {[e.estabelecimento, e.bairro].filter(Boolean).join(' · ') ||
+                        e.tipo}
+                    </span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
     </>

@@ -13,7 +13,6 @@
     "@deck.gl/core": "^9.3.10",
     "@deck.gl/layers": "^9.3.10",
     "@deck.gl/mapbox": "^9.3.10",
-    "@deck.gl/react": "^9.3.10",
     "maplibre-gl": "^6.4.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"

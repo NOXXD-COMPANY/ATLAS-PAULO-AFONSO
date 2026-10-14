@@ -295,7 +295,6 @@ body,
 .info-panel dd {
   margin: 0;
   word-break: break-word;
-  text-transform: capitalize;
 }
 
 .info-panel .tipo-badge {
@@ -334,4 +333,156 @@ body,
   background: rgba(255, 255, 255, 0.8);
   padding: 4px 10px;
   border-radius: 6px;
+}
+.legend-count {
+  margin-left: auto;
+  color: #6b6b6b;
+  font-variant-numeric: tabular-nums;
+}
+
+.legend-sub {
+  margin: -2px 0 6px 20px;
+}
+
+.legend-note {
+  display: block;
+  color: #6b6b6b;
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+/* Carregamento: não cobre o mapa; os prédios vão aparecendo por baixo. */
+.loading {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  min-width: 240px;
+  background: rgba(255, 255, 255, 0.96);
+  border-radius: 8px;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.25);
+  padding: 8px 14px 10px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.loading-bar {
+  margin-top: 6px;
+  height: 3px;
+  border-radius: 2px;
+  background: #e6e6e6;
+  overflow: hidden;
+}
+
+.loading-bar > div {
+  height: 100%;
+  background: #1976d2;
+  transform-origin: left;
+  transition: transform 300ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.error-box {
+  position: absolute;
+  top: 60px;
+  left: 12px;
+  z-index: 20;
+  max-width: 340px;
+  background: #fff4f4;
+  color: #8e1414;
+  border: 1px solid #f3c7c7;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.info-panel h3 {
+  margin: 16px 0 8px;
+  padding-top: 10px;
+  border-top: 1px solid #eee;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #6b6b6b;
+}
+
+.panel-note {
+  margin: 0;
+  color: #6b6b6b;
+}
+
+.enderecos {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.enderecos li {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 6px 0;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.enderecos li .legend-swatch {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  margin-top: 3px;
+}
+
+.enderecos strong,
+.enderecos span {
+  display: block;
+  text-transform: capitalize;
+}
+
+.enderecos span {
+  color: #6b6b6b;
+  font-size: 12px;
+}
+
+.info-panel .close {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  top: 6px;
+  right: 6px;
+  border-radius: 6px;
+}
+
+.info-panel .close:hover {
+  background: #f0f0f0;
+}
+
+.report-panel .export-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+:focus-visible {
+  outline: 2px solid #1976d2;
+  outline-offset: 2px;
+}
+
+@media (max-width: 600px) {
+  .info-panel {
+    top: auto;
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    width: auto;
+    max-height: 60%;
+  }
+
+  .loading {
+    top: 60px;
+  }
+
+  .legend .legend-note {
+    display: none;
+  }
 }

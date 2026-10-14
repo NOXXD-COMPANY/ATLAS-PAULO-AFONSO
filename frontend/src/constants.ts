@@ -26,3 +26,26 @@ export function corDoTipo(tipo: unknown): [number, number, number, number] {
 }
 
 export const FONTE_PONTO = 'QG/CNEFE';
+
+export const API_URL = import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:8000';
+
+/** GET JSON com novas tentativas (o backend pode estar subindo). */
+export async function fetchJson(
+  url: string,
+  attempts: number,
+  signal?: AbortSignal,
+): Promise<any> {
+  let lastErr: unknown = null;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const res = await fetch(url, { signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json();
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      lastErr = err;
+      if (attempt < attempts) await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+  throw lastErr;
+}
