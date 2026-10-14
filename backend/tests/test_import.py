@@ -104,6 +104,14 @@ def test_montar_predios_e_linhas():
     assert p["4"][7] == 1
 
 
+def test_montar_osm_repetindo_overture_nao_duplica():
+    overture = [_predio("a", X, Y)]
+    osm = [_predio("x", X + 1 * M, Y + 1 * M, osm_id="way/1"),  # em cima de "a"
+           _predio("y", X + 300 * M, Y, osm_id="way/2")]  # onde o Overture não cobre
+    _, predio_rows = imp.montar(overture, [], osm)
+    assert sorted(r[0] for r in predio_rows) == ["a", "osm-way-2"]
+
+
 def test_montar_ids_duplicados_ganham_sufixo():
     pts = [_endereco("dup", X, Y), _endereco("dup", X + 900 * M, Y)]
     rows, predio_rows = imp.montar([], pts, [])

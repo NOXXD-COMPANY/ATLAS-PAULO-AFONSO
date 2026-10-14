@@ -139,6 +139,7 @@ export default function App() {
       const obj = info?.object as Predio | undefined;
       // Cópia: clicar de novo no mesmo prédio refaz a busca (ex.: após erro).
       setSelected(obj ? { ...obj } : null);
+      setDetalhe(null); // nova tentativa mostra "Carregando…", não o erro anterior
       // Painel e relatório ocupam o mesmo canto: um fecha o outro.
       if (obj) setShowReport(false);
     };
@@ -159,11 +160,12 @@ export default function App() {
       try {
         // Total para a barra de progresso; em_cobertura esconde as bolinhas
         // fora da área com prédios.
+        // Sem o total, a carga segue só sem a porcentagem.
         const stats = await fetchJson(
           `${API_URL}/api/stats?em_cobertura=true`,
           5,
           ctrl.signal,
-        );
+        ).catch(() => null);
         const total = typeof stats?.predios === 'number' ? stats.predios : 0;
         setProgress({ loaded: 0, total });
 

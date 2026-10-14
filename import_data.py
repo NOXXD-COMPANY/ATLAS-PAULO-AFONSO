@@ -345,9 +345,13 @@ def montar(building_features, qg_features, osm_features):
         add_predio(b["id"], geom, centro(geom), props.get("num_floors"), fonte, tipo, 0)
 
     osm_com_endereco = set(to_osm.values())
+    overture_tree = strtree.STRtree(polys)
     for oi, o in enumerate(osm_features):
         geom = osm_polys[oi]
         if oi in osm_com_endereco or geom.is_empty:
+            continue
+        # OSM é só onde o Overture não cobre: sem isso o prédio sai em dobro.
+        if len(overture_tree.query(geom, predicate="intersects")):
             continue
         pid = osm_id(oi)
         tipo = best_type(None, {"class": (o["properties"] or {}).get("building")})
