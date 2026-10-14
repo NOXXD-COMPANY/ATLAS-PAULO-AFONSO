@@ -29,11 +29,12 @@ Repositório: <https://github.com/PROJETOWEB2026/EM-PROGRESSO>
 6. [API](#api)
 7. [Modelo de dados](#modelo-de-dados)
 8. [Requisitos e estado de implementação](#requisitos-e-estado-de-implementação)
-9. [Casos de uso](#casos-de-uso)
-10. [Decisões de engenharia](#decisões-de-engenharia)
-11. [Limitações conhecidas](#limitações-conhecidas)
-12. [Roadmap](#roadmap)
-13. [Estrutura do repositório](#estrutura-do-repositório)
+9. [Custo zero](#custo-zero)
+10. [Casos de uso](#casos-de-uso)
+11. [Decisões de engenharia](#decisões-de-engenharia)
+12. [Limitações conhecidas](#limitações-conhecidas)
+13. [Roadmap](#roadmap)
+14. [Estrutura do repositório](#estrutura-do-repositório)
 
 ---
 
@@ -55,7 +56,7 @@ dados reais (Overture + QG/CNEFE)
         ↓
     MySQL/MariaDB (tabela espacial `buildings`)
         ↓
-    FastAPI (GET /api/buildings, /api/buildings/{id})
+    FastAPI (GET /api/predios, /api/predios/{id}, /api/stats, /api/buildings)
         ↓
     React + MapLibre + deck.gl
         ↓
@@ -70,14 +71,19 @@ dados reais (Overture + QG/CNEFE)
 | `qg_810_endereco_*.json` (CNEFE/IBGE, município 2924009) | Endereços e estabelecimentos | 61.965 pontos |
 | `osm_buildings_paulo_afonso.geojson` (2ª fonte, via API Overpass/OSM — aberta, sem login) | Polígonos onde o Overture não cobre | 400 prédios (fallback; nenhum endereço novo adotado — o Overture municipal já cobria) |
 
-A tabela `buildings` tem uma linha por endereço QG (61.965) mais os prédios sem nenhum endereço, totalizando **87.951 registros**. 58.178 endereços (93,9%) caíram em polígono; restam 3.787 bolinhas.
+A tabela `buildings` tem uma linha por endereço QG (61.965) mais os prédios sem nenhum endereço, totalizando **87.951 registros**. 58.178 endereços (93,9%) caíram em polígono; restam 3.787 bolinhas. A tabela `predios` tem **um polígono por prédio**, com o ponto no centro dele: é o que o mapa desenha.
+
+> Os números acima são da carga anterior às regras 5 e 7. Rodar `import_data.py` de novo atualiza a contagem (menos bolinhas, menos prédios sem endereço).
 
 **Regras da junção espacial endereço × edificação:**
 
 1. Se o ponto está **dentro** de um polígono, usa esse polígono.
 2. Se não, procura polígonos a até **~15 m** (tolerância para porta na fachada ou erro de GPS).
 3. Havendo mais de um candidato, escolhe o **mais próximo**.
-4. Endereço sem prédio vira um **círculo de ~5 m** ao redor do ponto.
+4. O que sobrar tenta o polígono do **OSM** (mesmas regras 1 a 3).
+5. O que ainda sobrar adota o **prédio Overture sem nenhum endereço** mais próximo, a até **~30 m**.
+6. Endereço sem prédio vira um **círculo de ~5 m** ao redor do ponto.
+7. O endereço é desenhado no **centro do prédio** (centroide; em prédio em L ou U, um ponto garantido dentro dele). Todos os endereços de um prédio aparecem juntos no painel.
 
 O Overture agora cobre o município inteiro (recortado no contorno oficial): 93,9% dos endereços têm polígono; restam 3.787 bolinhas.
 
@@ -95,9 +101,9 @@ IDs de endereço duplicados no CNEFE recebem sufixo `#n` para manter a chave pri
 Pré-requisitos: Python 3, Node.js, e o `mariadb`/`mariadbd` do sistema já instalados (não precisa rodar o MariaDB como serviço, pois o script sobe uma instância local). Os arquivos de dados brutos devem estar em `data/raw/overture/` e `data/raw/qg/`.
 
 ```bash
-# 1) Ambiente Python (uma vez)
+# 1) Ambiente Python (uma vez); requirements-dev.txt inclui pytest e httpx
 python3 -m venv .venv
-./.venv/bin/pip install -r backend/requirements.txt
+./.venv/bin/pip install -r backend/requirements-dev.txt
 
 # 2) Instalar o app (uma vez)
 cd frontend && npm install && cd ..
@@ -116,6 +122,8 @@ cd frontend && npm run dev -- --port 5173 &
 ```
 
 Abra **http://127.0.0.1:5173/**.
+
+**Testes:** `./.venv/bin/python -m pytest backend/tests -q` (no Windows, `.venv\Scripts\python`). Cobrem a API, os filtros e o cruzamento endereço × prédio do ETL; os de integração pulam sozinhos se o MariaDB estiver fora.
 
 Para parar o banco: `bash scripts/db.sh stop`.
 
@@ -145,7 +153,7 @@ Arquitetura em **camadas**, com um módulo de carga em lote separado da aplicaç
 
 **Componentes**
 
-- **Carga (`import_data.py`)**: `load_buildings`, `load_qg_points`, `relate_points_to_buildings` (junção espacial), `best_type` (cascata de classificação) e `main` (recria a tabela e insere em lotes de 500).
+- **Carga (`import_data.py`)**: `load_buildings`, `load_qg_points`, `associar` (junção espacial em três passos), `best_type` (cascata de classificação), `montar` (monta as linhas de `buildings` e `predios`, sem banco), `publicar` (troca atômica das tabelas) e `main`.
 - **Backend**: `main.py` (rotas), `db.py` (conexão, consulta e conversão linha → Feature) e `config.py` (credenciais).
 - **Frontend**:
   - `App.tsx`: mapa, camadas deck.gl, seleção, legenda e painel de detalhes;
@@ -158,7 +166,7 @@ Arquitetura em **camadas**, com um módulo de carga em lote separado da aplicaç
 | Biblioteca | Papel |
 | --- | --- |
 | React | Estado e interface (painéis, legenda, relatório) |
-| MapLibre GL | Mapa base (OpenStreetMap), câmera e navegação |
+| MapLibre GL | Mapa base vetorial (OpenFreeMap), câmera e navegação |
 | deck.gl | Renderização em massa via WebGL: polígonos, seleção por clique, extrusão 3D |
 
 ## API
@@ -166,9 +174,13 @@ Arquitetura em **camadas**, com um módulo de carga em lote separado da aplicaç
 | Método e rota | Descrição | Respostas |
 | --- | --- | --- |
 | `GET /` | Verificação de saúde (`{"status": "ok", "service": "atlas-urbano-api"}`) | 200 |
-| `GET /api/buildings` | Edificações como `FeatureCollection` GeoJSON. Filtros opcionais: `?bbox=minLng,minLat,maxLng,maxLat` (usa o índice espacial), `?bairro=` (repete para vários), `?tipo=`, `?fonte=`. `?light=true` devolve só os campos de renderização. Paginação com `?limit=` (máx. 20000) e `?offset=` (ordem estável por `id`). Sem parâmetros, devolve tudo de uma vez (comportamento antigo) | 200, 422 (bbox/limite inválido) |
+| `GET /api/buildings` | Edificações como `FeatureCollection` GeoJSON. Filtros opcionais: `?bbox=minLng,minLat,maxLng,maxLat` (usa o índice espacial), `?bairro=` (repete para vários), `?tipo=`, `?fonte=`. Paginação com `?limit=` (máx. 20000) e `?offset=` (ordem estável por `id`). Sem parâmetros, devolve tudo de uma vez (comportamento antigo) | 200, 422 (bbox/limite inválido) |
 | `GET /api/buildings/{building_id}` | Uma edificação como `Feature` GeoJSON | 200, 404 |
-| `GET /api/stats` | Agregados (`total`, `by_tipo`, `by_bairro`, `area_total_m2`, `area_media_m2`) com os mesmos filtros de `bbox`/`bairro`/`tipo`/`fonte` | 200, 422 |
+| `GET /api/predios` | O que o mapa desenha: um `Feature` por prédio (sem repetir o polígono por endereço), com `tipo` dominante, `num_pavimentos`, `fonte`, `n` (endereços) e `ponto` (centro). `?em_cobertura=`, `?limit=` (máx. e padrão 20000) e `?offset=` | 200, 422 |
+| `GET /api/predios/{predio_id}` | Um prédio com `area_m2` e a lista `enderecos` (todos os endereços ligados a ele) | 200, 404 |
+| `GET /api/stats` | Agregados (`total`, `predios`, `by_tipo`, `by_bairro`, `by_bairro_tipo`, `area_total_m2`, `area_media_m2`) com os mesmos filtros de `bbox`/`bairro`/`tipo`/`fonte` | 200, 422 |
+
+Geometrias saem com 6 casas decimais (~10 cm).
 
 **Propriedades de cada Feature**
 
@@ -182,6 +194,7 @@ Arquitetura em **camadas**, com um módulo de carga em lote separado da aplicaç
 | `estabelecimento` | string \| null | Descrição do estabelecimento (CNEFE) |
 | `num_pavimentos` | number \| null | Pavimentos, quando o Overture informa |
 | `fonte` | string \| null | Dataset de origem; `QG/CNEFE` indica endereço sem polígono de prédio |
+| `predio_id` | string | Prédio ao qual o registro pertence (chave de `predios`) |
 
 ## Modelo de dados
 
@@ -191,8 +204,12 @@ Uma única tabela espacial, recriada a cada carga:
 
 ```
 buildings(id, geom, area_m2, tipo, endereco, bairro,
-          estabelecimento, num_pavimentos, fonte)
+          estabelecimento, num_pavimentos, fonte, predio_id)
+predios(predio_id, geom, ponto, area_m2, tipo,
+        num_pavimentos, fonte, n_enderecos)
 ```
+
+A carga grava em `buildings_new`/`predios_new` e troca as duas de uma vez (`RENAME TABLE`): se o import falhar no meio, a API continua servindo a carga anterior.
 
 Todas as geometrias estão em **SRID 0** (coordenadas lon/lat sem sistema de referência declarado), o que limita o uso de funções geográficas nativas do banco.
 
@@ -239,7 +256,7 @@ A coluna **Estado** é uma avaliação do código atual (MVP) contra a documenta
 | RF02 | Baixar malhas territoriais oficiais (setores e bairros) | Planejado | O bairro hoje vem do campo de localidade do CNEFE |
 | RF03 | Edificações de duas fontes independentes (Overture e Google Open Buildings) | Parcial | Apenas Overture |
 | RF04 | Classificar cada endereço por espécie | Implementado | Mapeamento `ESPECIE_TO_TIPO` |
-| RF05 | Associar cada endereço à edificação mais próxima, com raio documentado | Implementado | Contém → tolerância de ~15 m → mais próximo |
+| RF05 | Associar cada endereço à edificação mais próxima, com raio documentado | Implementado | Contém → tolerância de ~15 m → mais próximo → OSM → prédio sem endereço a até ~30 m |
 | RF06 | Campos de confiança (`confianca_fonte`, `concordancia_fontes`, `nivel_verificacao`, `prioridade_campo`) | Planejado | Depende de uma segunda fonte (RF03) |
 | RF07 | Gerar e priorizar a fila de conferência de campo (`fila_conferencia.csv`) | Planejado | |
 | RF08 | Tabela mestra de estatísticas por recorte territorial | Parcial | O relatório traz contagem por tipo e por bairro; faltam área somada e mediana, densidade, endereços por edificação e % em construção |
@@ -250,13 +267,31 @@ A coluna **Estado** é uma avaliação do código atual (MVP) contra a documenta
 
 | ID | Requisito | Categoria | Estado | Observação |
 | --- | --- | --- | --- | --- |
-| RNF01 | Custo total R$ 0,00 | Econômico | Atendido | Apenas dados e ferramentas abertos; tiles públicos do OSM e OpenFreeMap |
+| RNF01 | Custo total R$ 0,00 | Econômico | Atendido | Apenas dados e ferramentas abertos e gratuitos (ver [Custo zero](#custo-zero)) |
 | RNF02 | Reprodutibilidade a partir do pacote e das receitas | Manutenibilidade | Parcial | Há scripts e `requirements.txt`, mas as versões das dependências não estão fixadas e os dados brutos são manuais |
 | RNF03 | Cobertura de 100% do perímetro urbano processado | Completude | Parcial | Overture municipal (52.809 prédios) + fallback OSM (400); faltam os ~3,8 mil endereços ainda sem polígono |
 | RNF04 | Taxa de associação endereço–edificação ≥ 85% (piloto: 93%) | Qualidade de dados | Atendido | 93,9% dos endereços caem em polígono (58.178 de 61.965) |
 | RNF05 | Nenhum dado pessoal armazenado ou publicado | Privacidade | A verificar | Guarda-se endereço e estabelecimento; conferir se `estabelecimento` não expõe dados pessoais |
 | RNF06 | Apenas fontes com licença compatível (vedados Google Maps/Street View, DNE dos Correios, Mapillary) | Legal | Atendido | Fontes em uso: OpenStreetMap, Overture e IBGE |
 | RNF07 | Toda estatística publicada carrega fonte, método e limitação | Confiabilidade | Parcial | O painel de detalhes mostra a fonte por edificação; o relatório ainda não exibe método e limitação |
+
+## Custo zero
+
+Tudo o que o projeto usa é gratuito, sem chave de API e sem cartão de crédito:
+
+| Peça | O que faz | Custo e licença |
+| --- | --- | --- |
+| Overture Maps | Polígonos dos prédios | Grátis, ODbL |
+| CNEFE 2022 (IBGE) | Endereços e espécie | Grátis, dado público |
+| OpenStreetMap via Overpass | 2ª fonte de polígonos | Grátis, ODbL, sem login |
+| OpenFreeMap | Mapa base vetorial | Grátis, sem chave e sem limite de uso |
+| MapLibre GL / deck.gl | Mapa e renderização WebGL | Grátis, BSD-3 / MIT |
+| React, Vite, TypeScript | Frontend | Grátis, MIT / Apache-2.0 |
+| FastAPI, Uvicorn, PyMySQL, Shapely | Backend e ETL | Grátis, MIT / BSD |
+| MariaDB | Banco espacial | Grátis, GPLv2 |
+| pytest, oxlint | Testes e lint | Grátis, MIT |
+
+O mapa base saiu dos tiles raster de `tile.openstreetmap.org`, cuja política de uso não cobre tráfego de aplicação, e foi para o OpenFreeMap, feito para esse uso.
 
 ## Casos de uso
 
@@ -270,7 +305,7 @@ Atores: **Cliente** (consulta mapa e relatórios) e **Equipe Mantenedora** (carg
 | Consultar dados agregados por bairro/setor | Cliente | Parcial (bairro sim; setor não) |
 | Emitir relatório estatístico | Cliente | Implementado (exporta PDF pelo navegador) |
 | Carregar a base de edificações e endereços | Equipe Mantenedora | Implementado (`import_data.py`) |
-| Cruzar endereços × telhados | Equipe Mantenedora | Implementado (`relate_points_to_buildings`) |
+| Cruzar endereços × telhados | Equipe Mantenedora | Implementado (`associar`) |
 | Gerar fila de conferência de campo | Equipe Mantenedora | Planejado |
 
 ## Decisões de engenharia
@@ -281,32 +316,33 @@ Atores: **Cliente** (consulta mapa e relatórios) e **Equipe Mantenedora** (carg
 | **Índice espacial (STRtree) no ETL** | Evita comparação força-bruta O(n×m) entre ~62 mil pontos e ~8 mil polígonos. | Índice em memória |
 | **Vocabulário próprio de tipos de uso** | Isola o sistema dos códigos do IBGE e das classes do Overture (camada anticorrupção); se uma fonte mudar, só o ETL muda. | Mapeamentos a manter |
 | **Cascata de fallback do tipo** | Sempre existe um valor válido, e a fonte mais confiável prevalece. | Prioridade fixa no código |
-| **Carga idempotente (`DROP` + recria)** | Rodar duas vezes dá o mesmo resultado, sem lixo acumulado. | Não é incremental; falha no meio deixa o banco vazio |
+| **Carga idempotente com troca atômica** | Rodar duas vezes dá o mesmo resultado; grava em `*_new` e troca num único `RENAME`, então falha no meio não esvazia a API. | Não é incremental; precisa de espaço para duas cópias |
+| **Mapa desenha prédios, não endereços** | Um polígono por prédio (`/api/predios`) em vez de repetir o polígono para cada endereço: menos features, JSON menor, nada empilhado. Endereços só viajam no clique. | Duas tabelas, gravadas juntas pela mesma carga |
 | **API como único acesso ao banco** | Credenciais nunca chegam ao navegador; permite trocar o banco sem tocar na interface. | Uma camada a mais |
 | **GeoJSON como contrato** | Padrão aberto (RFC 7946), consumível por QGIS, Leaflet, deck.gl etc. | Verboso para grandes volumes |
 | **FastAPI** | Leve, tipado, com documentação automática; Django traria ORM e admin sem uso. | |
 | **Consultas parametrizadas** | Protege contra injeção de SQL. | |
 | **deck.gl sobre MapLibre** | WebGL aguenta dezenas de milhares de polígonos com seleção e extrusão; MapLibre é open source e dispensa chave de API. | Duas bibliotecas de mapa para integrar |
-| **Estado local com hooks, dados derivados com `useMemo`** | O estado é pequeno; uma biblioteca global seria complexidade sem retorno. Há uma única fonte de verdade (`data`) e o resto é derivado. | |
-| **3D com degradação graciosa** | Se o serviço externo de tiles vetoriais falhar, o mapa base continua. | |
+| **Estado local com hooks, dados derivados com `useMemo`** | O estado é pequeno; uma biblioteca global seria complexidade sem retorno. Há uma única fonte de verdade (`pages`) e o resto é derivado. | |
+| **Uma camada deck.gl por página** | Cada página de 10 mil prédios é processada pela GPU uma vez; a página seguinte não refaz as anteriores. | Várias camadas em vez de uma |
+| **Mapa base desacoplado dos dados** | Se o OpenFreeMap falhar, os prédios continuam no mapa (vêm da nossa API). | |
 | **Retry no carregamento** | O backend pode estar subindo; são 5 tentativas com 2 s de intervalo. | |
 | **PDF via `window.print()` + CSS `@media print`** | Gera o relatório sem biblioteca extra nem backend de relatórios. | Pouco controle de layout |
 | **MariaDB local isolado por script** | Reprodutibilidade em ambiente restrito, sem exigir serviço instalado. | Depende de Linux/Bash e do `mariadbd` instalado |
 
-**Recursos 3D:** todo volume 3D é uma feature nossa extrusada pelo deck.gl — portanto tem sempre a cor do tipo e, ao clicar, o endereço. Prédios com `num_pavimentos` usam `pavimentos × 3 m` (dado do Overture); o restante usa altura ilustrativa de 5 m. Não há camada 3D externa (a anterior, do OpenFreeMap/OSM, era cinza e sem vínculo com nossos endereços).
+**Recursos 3D:** todo volume 3D é um prédio nosso extrusado pelo deck.gl — portanto tem sempre a cor do tipo e, ao clicar, os endereços. O ponto branco no centro do telhado marca o endereço. Prédios com `num_pavimentos` usam `pavimentos × 3 m` (dado do Overture); o restante usa altura ilustrativa de 5 m. Não há camada 3D externa (a anterior, do OpenFreeMap/OSM, era cinza e sem vínculo com nossos endereços).
 
 ## Limitações conhecidas
 
-- **Carga inicial ainda é a cidade inteira**: o frontend busca tudo em páginas de 5 mil features (~13 MB cada, com progresso na tela e pintura incremental), em vez de um único JSON de ~200 MB (~18 páginas). Filtros e agregações do relatório rodam no navegador.
+- **Carga inicial ainda é a cidade inteira**: o frontend busca todos os prédios em páginas de 10 mil (com progresso e pintura incremental). Com dados sintéticos na escala real (55 mil prédios), o JSON caiu de 43,9 MB para 18,3 MB (3,4 → 1,8 MB com gzip) e a carga completa leva ~3 s em localhost. O próximo passo de escala são *vector tiles*.
 - **"Edificação" é ambígua**: a tabela tem uma linha por endereço, então 87.951 registros não são 87.951 prédios. O relatório rotula a contagem como "Edificações".
 - **Prédios sem endereço nem tipo** (~26 mil): o Overture municipal trouxe a forma, mas sem uso conhecido (ficam `desconhecido` até conferência de campo ou 2ª fonte com atributo).
 - **Acoplamento por *magic string***: o frontend identifica "endereço sem prédio" pelo valor `fonte = 'QG/CNEFE'`. Um campo explícito (ex.: `tem_poligono`) seria mais robusto.
-- **ETL monolítico e destrutivo**: leitura, cruzamento, transformação e carga num único script, sem transação protegendo o estado anterior.
 - **Credenciais fixas e duplicadas** (`atlas`/`atlas`) em `config.py` e `import_data.py`; deveriam vir de variáveis de ambiente, numa configuração única.
 - **SRID 0** em todas as geometrias; a área é calculada no ETL por projeção local aproximada.
-- **Heurística espacial simples**: em ponto ambíguo, escolhe o polígono mais próximo, sem tratar multiplicidade.
-- **Sem testes automatizados**; o cruzamento espacial ainda é validado por inspeção visual e contagens.
-- **Dependência de serviços externos de tiles** (OpenStreetMap e OpenFreeMap), o que contraria o objetivo de mapa offline (RF09).
+- **Heurística espacial simples**: em ponto ambíguo, escolhe o polígono mais próximo. O tipo do prédio é o mais frequente entre os endereços dele (prédio misto aparece com o tipo da maioria).
+- **"Centro do prédio" não é "centro do lote"**: não existe base aberta de lotes urbanos de Paulo Afonso. Com o cadastro de lotes da prefeitura, o ponto poderia ir para o centro do terreno.
+- **Dependência de serviço externo de tiles** (OpenFreeMap), o que contraria o objetivo de mapa offline (RF09).
 - **Dependências sem versão fixada** em `requirements.txt` (`fastapi`, `uvicorn[standard]`, `pymysql`, `shapely`).
 
 ## Roadmap
@@ -314,11 +350,11 @@ Atores: **Cliente** (consulta mapa e relatórios) e **Equipe Mantenedora** (carg
 Em ordem sugerida de prioridade:
 
 1. **Modelo de dados**: migrar para o modelo normalizado (`BUILDING`, `CNEFE_ADDRESS`, `SPATIAL_MATCH`), resolvendo a relação 1 telhado × N endereços; adotar SRID 4674 para armazenar e 31984 para medir.
-2. **Qualidade do ETL**: carga em tabela de *staging* com troca atômica, configuração por variáveis de ambiente, versões fixadas das dependências e testes do cruzamento espacial.
+2. **Qualidade do ETL**: configuração por variáveis de ambiente e versões fixadas das dependências (troca atômica e testes do cruzamento já feitos).
 3. **Cobertura e qualidade**: ampliar a janela do Overture para o perímetro urbano inteiro (RNF03), medir a taxa de associação (RNF04) e incluir a segunda fonte, Google Open Buildings (RF03).
 4. **Confiança e conferência de campo**: calcular `confianca_fonte`, `concordancia_fontes`, `nivel_verificacao` e `prioridade_campo` (RF06) e gerar `fila_conferencia.csv` (RF07).
 5. **Estatísticas**: tabela mestra por bairro e setor com área somada e mediana, densidade e % em construção (RF08), cada uma com fonte, método e limitação (RNF07). Para isso, baixar as malhas oficiais de setores e bairros (RF02).
-6. **Escala da API**: filtros (`?bairro=`, `?bbox=`), paginação ou *vector tiles*, e eventual migração para PostGIS.
+6. **Escala da API**: *vector tiles* (ex.: PMTiles gerado no ETL, servido como arquivo estático) e eventual migração para PostGIS.
 7. **Mapa**: simbologia por densidade e faixa de área, clusterização de endereços e opção offline (RF09).
 8. **Publicação**: disponibilizar mapa e estatísticas para usuários externos (RF10), com Docker Compose para simplificar a instalação.
 
@@ -328,19 +364,21 @@ Em ordem sugerida de prioridade:
 backend/            API FastAPI (o frontend nunca acessa o MySQL diretamente)
   config.py         conexão/credenciais do banco
   db.py             consultas → GeoJSON
-  main.py           rotas /, /api/buildings e /api/buildings/{id}
+  main.py           rotas /, /api/buildings, /api/predios e /api/stats
   requirements.txt  dependências Python do backend
+  requirements-dev.txt  + pytest e httpx
+  tests/            testes da API e do ETL
 frontend/           React + Vite + TS + MapLibre + deck.gl
   src/App.tsx       mapa, camadas, painel, legenda, relatório
   src/Report.tsx    relatório (totais, filtros, exportar PDF)
-  src/constants.ts  cores e ordem dos tipos de uso
+  src/constants.ts  cores e ordem dos tipos de uso, URL da API e fetch com retry
   src/index.css     estilos (inclui regras de impressão do relatório)
   src/main.tsx      ponto de entrada React
 scripts/
   db.sh             sobe/para o MariaDB local
   run.sh            sobe tudo (banco, importação, backend, frontend)
   mysql-local.cnf   tmpdir do MariaDB (sem /var/tmp no ambiente)
-import_data.py      Overture + QG → relação espacial → tabela `buildings`
+import_data.py      Overture + QG + OSM → relação espacial → `buildings` e `predios`
 data/raw/           arquivos fornecidos (overture/ e qg/)
 ```
 
