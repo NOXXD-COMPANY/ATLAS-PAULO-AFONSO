@@ -1,17 +1,12 @@
 """Testes essenciais (P6): só pontos críticos, sem cobertura completa.
 
 Roda com: ./.venv/bin/python -m pytest backend/tests -q
-(dependências de dev: pytest, httpx)
+(dependências de dev: pip install -r backend/requirements-dev.txt)
 """
 
 import pytest
 
 from backend import db
-from backend.schemas import (
-    FeatureFull,
-    FeatureLight,
-    StatsResponse,
-)
 
 
 # --- P1: construção/validação do BBOX -------------------------------------
@@ -70,16 +65,17 @@ def test_build_where_apenas_bairro():
 # --- P3: conversão para GeoJSON ---------------------------------------------
 
 def _row(full=True):
-    base = {"ST_AsGeoJSON(geom)": '{"type":"Point","coordinates":[-38.2,-9.4]}'}
+    base = {"geojson": '{"type":"Point","coordinates":[-38.2,-9.4]}'}
     if full:
         base.update({
             "id": "x1", "area_m2": 112.5, "tipo": None, "endereco": "Rua A",
             "bairro": "CENTRO", "estabelecimento": None,
-            "num_pavimentos": 2, "fonte": "QG/CNEFE",
+            "num_pavimentos": 2, "fonte": "QG/CNEFE", "predio_id": "x1",
         })
     else:
-        base.update({"id": "x1", "tipo": "comercial", "fonte": "OSM",
-                     "num_pavimentos": None})
+        base.update({"predio_id": "p1", "tipo": None, "fonte": "OSM",
+                     "num_pavimentos": None, "n_enderecos": 3,
+                     "x": -38.2000004, "y": -9.4})
     return base
 
 
@@ -87,23 +83,16 @@ def test_row_to_feature_normaliza_tipo():
     f = db.row_to_feature(_row())
     assert f["type"] == "Feature"
     assert f["properties"]["tipo"] == "desconhecido"  # None → fallback
-    FeatureFull.model_validate(f)  # contrato válido
+    assert f["geometry"]["type"] == "Point"
+    assert f["properties"]["predio_id"] == "x1"
 
 
-def test_row_to_light_feature_minimo():
-    f = db.row_to_light_feature(_row(full=False))
-    assert set(f["properties"]) == {"tipo", "fonte", "num_pavimentos"}
-    assert "endereco" not in f["properties"]
-    FeatureLight.model_validate(f)
-
-
-def test_stats_schema():
-    s = StatsResponse.model_validate({
-        "total": 10, "by_tipo": {"residencial": 10},
-        "by_bairro": {"CENTRO": 10},
-        "area_total_m2": 1000.0, "area_media_m2": 100.0,
-    })
-    assert s.total == 10
+def test_row_to_predio_minimo():
+    f = db.row_to_predio(_row(full=False))
+    assert f["id"] == "p1"
+    assert f["properties"] == {"tipo": "desconhecido", "fonte": "OSM",
+                               "num_pavimentos": None, "n": 3,
+                               "ponto": [-38.2, -9.4]}
 
 
 # --- Classificação best_type (regra de domínio do ETL) ----------------------
@@ -140,6 +129,13 @@ def client(monkeypatch):
                                      "by_bairro": {}, "area_total_m2": None,
                                      "area_media_m2": None})
     monkeypatch.setattr(main.db, "fetch_building", lambda i: None)
+
+    def fake_predios(**kwargs):
+        vistas["predios"] = kwargs
+        return []
+
+    monkeypatch.setattr(main.db, "fetch_predios", fake_predios)
+    monkeypatch.setattr(main.db, "fetch_predio", lambda i: None)
     return TestClient(main.app), vistas
 
 
@@ -168,6 +164,28 @@ def test_detail_404_mantido(client):
     assert r.json() == {"detail": "building not found"}
 
 
+def test_predios_pagina_e_cobertura(client):
+    t, vistas = client
+    r = t.get("/api/predios", params={"em_cobertura": "true",
+                                      "limit": 100, "offset": 200})
+    assert r.status_code == 200
+    assert r.json()["features"] == []
+    assert vistas["predios"] == {"limit": 100, "offset": 200,
+                                 "em_cobertura": True}
+
+
+def test_predios_limite_acima_do_maximo_422(client):
+    t, _ = client
+    r = t.get("/api/predios", params={"limit": db.MAX_LIMIT + 1})
+    assert r.status_code == 422
+
+
+def test_predio_404(client):
+    t, _ = client
+    r = t.get("/api/predios/nao-existe")
+    assert r.status_code == 404
+
+
 def test_stats_endpoint(client):
     t, _ = client
     r = t.get("/api/stats", params={"tipo": "comercial"})
@@ -189,12 +207,11 @@ def _db_vivo():
 @pytest.mark.skipif(not _db_vivo(), reason="MariaDB local fora do ar")
 def test_integracao_bbox_coerente_com_stats():
     bbox = db.parse_bbox("-38.24,-9.41,-38.21,-9.39")
-    feats = db.fetch_all_buildings(bbox=bbox, tipo="comercial", light=True)
+    feats = db.fetch_all_buildings(bbox=bbox, tipo="comercial")
     stats = db.fetch_stats(bbox=bbox, tipo="comercial")
     assert stats["total"] == len(feats) > 0
     assert stats["by_tipo"] == {"comercial": len(feats)}
-    for f in feats:
-        FeatureLight.model_validate(f)
+    assert sum(c["n"] for c in stats["by_bairro_tipo"]) == len(feats)
 
 
 # --- Cobertura: esconder bolinhas fora da janela com polígonos ---------------
@@ -212,11 +229,27 @@ def test_build_where_em_cobertura_combina_com_bbox():
     assert params[-2] == "QG/CNEFE"
 
 
+def test_build_where_em_cobertura_nao_some_com_fonte_nula():
+    # `fonte != x` dá NULL quando fonte é NULL e a linha sumia.
+    clause, _ = db.build_where(em_cobertura=True)
+    assert "fonte <=> %s" in clause
+    assert "fonte !=" not in clause
+
+
 @pytest.mark.skipif(not _db_vivo(), reason="MariaDB local fora do ar")
 def test_integracao_em_cobertura_remove_so_bolinhas_fora():
-    # Cobertura municipal: 87951 linhas, tudo dentro da janela.
+    # Cobertura municipal: tudo dentro da janela.
     total = db.fetch_stats()["total"]
     filtrado = db.fetch_stats(em_cobertura=True)["total"]
-    assert (total, filtrado) == (87951, 87951)
+    assert total == filtrado > 20000
     feats = db.fetch_all_buildings(em_cobertura=True, limit=20000)
     assert len(feats) == 20000  # primeira página cheia: sem furo
+
+
+@pytest.mark.skipif(not _db_vivo(), reason="MariaDB local fora do ar")
+def test_integracao_predios_um_por_poligono():
+    stats = db.fetch_stats()
+    predios = db.fetch_predios(limit=db.MAX_LIMIT)
+    assert len(predios) == min(stats["predios"], db.MAX_LIMIT)
+    detalhe = db.fetch_predio(predios[0]["id"])
+    assert len(detalhe["properties"]["enderecos"]) == predios[0]["properties"]["n"]

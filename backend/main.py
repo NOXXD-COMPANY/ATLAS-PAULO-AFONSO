@@ -34,10 +34,6 @@ def list_buildings(
     bairro: list[str] | None = Query(default=None),
     tipo: str | None = None,
     fonte: str | None = None,
-    light: bool = Query(
-        default=False,
-        description="Só campos de renderização (tipo, fonte, num_pavimentos)",
-    ),
     em_cobertura: bool = Query(
         default=False,
         description="Esconde bolinhas fora da janela com polígonos",
@@ -58,7 +54,6 @@ def list_buildings(
         bairros=bairro,
         tipo=tipo,
         fonte=fonte,
-        light=light,
         limit=limit,
         offset=offset,
         em_cobertura=em_cobertura,
@@ -87,6 +82,33 @@ def get_stats(
     return JSONResponse(content=db.fetch_stats(
         bbox=parsed_bbox, bairros=bairro, tipo=tipo, fonte=fonte,
         em_cobertura=em_cobertura))
+
+
+@app.get("/api/predios")
+def list_predios(
+    em_cobertura: bool = Query(default=False),
+    limit: int = Query(default=db.MAX_LIMIT, ge=1, le=db.MAX_LIMIT),
+    offset: int = Query(default=0, ge=0),
+):
+    """Um polígono por prédio, com o ponto no centro: o que o mapa desenha."""
+    features = db.fetch_predios(
+        limit=limit, offset=offset, em_cobertura=em_cobertura)
+    return JSONResponse(content={
+        "type": "FeatureCollection",
+        "name": "predios",
+        "features": features,
+    })
+
+
+@app.get("/api/predios/{predio_id}")
+def get_predio(predio_id: str):
+    """Um prédio com todos os endereços ligados a ele, ou 404."""
+    feature = db.fetch_predio(predio_id)
+    if feature is None:
+        return JSONResponse(
+            content={"detail": "predio not found"}, status_code=404
+        )
+    return JSONResponse(content=feature)
 
 
 @app.get("/api/buildings/{building_id}")
