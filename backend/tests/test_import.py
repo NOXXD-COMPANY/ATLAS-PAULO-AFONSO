@@ -1,7 +1,7 @@
 """Testes do cruzamento endereço × prédio (import_data), sem banco."""
 
-import json
 
+from shapely import wkt
 from shapely.geometry import Point, box, shape
 
 import import_data as imp
@@ -99,7 +99,7 @@ def test_montar_predios_e_linhas():
     pid, geom, ponto, area, tipo, num_pav, fonte, n = p["a"]
     assert (tipo, n) == ("comercial", 3)
     assert 90 < area < 110  # 10 m × 10 m
-    assert shape(json.loads(geom)).contains(shape(json.loads(ponto)))
+    assert wkt.loads(geom).contains(wkt.loads(ponto))
     assert p["vazio"][7] == 0
     assert p["4"][7] == 1
 

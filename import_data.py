@@ -9,7 +9,7 @@ from collections import Counter
 
 import pymysql
 
-from shapely.geometry import Point, shape, mapping
+from shapely.geometry import Point, shape
 from shapely.ops import transform
 from shapely import strtree
 
@@ -325,7 +325,7 @@ def montar(building_features, qg_features, osm_features):
             num_pav, fonte = None, "QG/CNEFE"
         tipo = best_type(qp, oprops)
         rows.append((
-            rid, json.dumps(mapping(geom)), _area_m2(geom), tipo,
+            rid, geom.wkt, _area_m2(geom), tipo,
             qp.get("LOGRAD_NUM") or None, qp.get("DSC_LOCALIDADE") or None,
             qp.get("DSC_ESTABELECIMENTO") or None, num_pav, fonte, pid,
         ))
@@ -339,7 +339,7 @@ def montar(building_features, qg_features, osm_features):
         props = b["properties"]
         tipo, fonte = best_type(None, props), fonte_of(props)
         rows.append((
-            b["id"], json.dumps(mapping(geom)), _area_m2(geom), tipo,
+            b["id"], geom.wkt, _area_m2(geom), tipo,
             None, None, None, props.get("num_floors"), fonte, b["id"],
         ))
         add_predio(b["id"], geom, centro(geom), props.get("num_floors"), fonte, tipo, 0)
@@ -356,13 +356,13 @@ def montar(building_features, qg_features, osm_features):
         pid = osm_id(oi)
         tipo = best_type(None, {"class": (o["properties"] or {}).get("building")})
         rows.append((
-            pid, json.dumps(mapping(geom)), _area_m2(geom), tipo,
+            pid, geom.wkt, _area_m2(geom), tipo,
             None, None, None, None, "OpenStreetMap", pid,
         ))
         add_predio(pid, geom, centro(geom), None, "OpenStreetMap", tipo, 0)
 
     predio_rows = [
-        (pid, json.dumps(mapping(p["geom"])), json.dumps(mapping(p["ponto"])),
+        (pid, p["geom"].wkt, p["ponto"].wkt,
          _area_m2(p["geom"]), tipo_dominante(p["tipos"]), p["num_pav"],
          p["fonte"], p["n"])
         for pid, p in predios.items()
@@ -413,17 +413,17 @@ def main():
             cur.execute(SCHEMA_BUILDINGS)
             cur.execute(SCHEMA_PREDIOS)
 
-            # SRID 0 em toda a tabela (tudo em lon/lat).
+            # WKT: SRID 0 no MySQL 8 e no MariaDB (GeoJSON daria 4326 no MySQL 8).
             sql_rows = (
                 "INSERT INTO buildings_new "
                 "(id, geom, area_m2, tipo, endereco, bairro, estabelecimento, "
                 "num_pavimentos, fonte, predio_id) "
-                "VALUES (%s, ST_GeomFromGeoJSON(%s), %s, %s, %s, %s, %s, %s, %s, %s)"
+                "VALUES (%s, ST_GeomFromText(%s), %s, %s, %s, %s, %s, %s, %s, %s)"
             )
             sql_predios = (
                 "INSERT INTO predios_new "
                 "(predio_id, geom, ponto, area_m2, tipo, num_pavimentos, fonte, n_enderecos) "
-                "VALUES (%s, ST_GeomFromGeoJSON(%s), ST_GeomFromGeoJSON(%s), "
+                "VALUES (%s, ST_GeomFromText(%s), ST_GeomFromText(%s), "
                 "%s, %s, %s, %s, %s)"
             )
             CHUNK = 500
