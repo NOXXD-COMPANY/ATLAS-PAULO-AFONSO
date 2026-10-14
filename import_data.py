@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Importa edificações (Overture) e endereços (QG/CNEFE) para o MySQL:
-uma linha por endereço, mais os prédios sem nenhum endereço."""
+`buildings` tem uma linha por endereço, mais os prédios sem nenhum endereço;
+`predios` tem um polígono por prédio, com o ponto no centro dele."""
 
 import json
 import math
@@ -33,11 +34,17 @@ DB_NAME = "atlas_urbano"
 # ~15 m de tolerância na borda (ex.: porta na fachada, erro de GPS).
 POINT_TOLERANCE_DEG = 0.000135
 
+# ~30 m: endereço que sobrou adota o prédio sem endereço mais próximo.
+ATTACH_TOLERANCE_DEG = 0.00027
+
 # Raio do círculo usado para endereços sem prédio (~5 m).
 POINT_BUFFER_DEG = 0.000045
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS buildings (
+# Carga em tabelas `*_new` e troca no fim: a API nunca vê tabela pela metade.
+TABELAS = ("buildings", "predios")
+
+SCHEMA_BUILDINGS = """
+CREATE TABLE buildings_new (
     id                  VARCHAR(64)  NOT NULL PRIMARY KEY,
     geom                GEOMETRY     NOT NULL,
     area_m2             DOUBLE       NULL,
@@ -47,6 +54,22 @@ CREATE TABLE IF NOT EXISTS buildings (
     estabelecimento     VARCHAR(255) NULL,
     num_pavimentos      INT          NULL,
     fonte               VARCHAR(128) NULL,
+    predio_id           VARCHAR(64)  NOT NULL,
+    SPATIAL INDEX idx_geom (geom),
+    INDEX idx_predio (predio_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+SCHEMA_PREDIOS = """
+CREATE TABLE predios_new (
+    predio_id           VARCHAR(64)  NOT NULL PRIMARY KEY,
+    geom                GEOMETRY     NOT NULL,
+    ponto               POINT        NOT NULL,
+    area_m2             DOUBLE       NULL,
+    tipo                VARCHAR(32)  NOT NULL DEFAULT 'desconhecido',
+    num_pavimentos      INT          NULL,
+    fonte               VARCHAR(128) NULL,
+    n_enderecos         INT          NOT NULL DEFAULT 0,
     SPATIAL INDEX idx_geom (geom)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
@@ -183,8 +206,8 @@ def best_type(qg_props, overture_props):
     return "desconhecido"
 
 
-def match_points(polys, points, q_indices=None):
-    """Associa pontos a polígonos: contém → tolerância de ~15 m → mais próximo."""
+def match_points(polys, points, q_indices=None, tolerance=POINT_TOLERANCE_DEG):
+    """Associa pontos a polígonos: contém → tolerância (padrão ~15 m) → mais próximo."""
     tree = strtree.STRtree(polys)
     if q_indices is None:
         q_indices = range(len(points))
@@ -194,7 +217,7 @@ def match_points(polys, points, q_indices=None):
         pt = Point(x, y)
         hits = tree.query(pt, predicate="contains")
         if len(hits) == 0:
-            hits = tree.query(pt.buffer(POINT_TOLERANCE_DEG), predicate="intersects")
+            hits = tree.query(pt.buffer(tolerance), predicate="intersects")
         if len(hits) == 0:
             continue
         cands = [int(i) for i in hits]
@@ -203,19 +226,159 @@ def match_points(polys, points, q_indices=None):
     return point_to_poly
 
 
-def relate_points_to_buildings(buildings, points):
+def valid_polys(features):
     polys = []
-    for b in buildings:
+    for b in features:
         g = shape(b["geometry"])
         if not g.is_valid:
             g = g.buffer(0)
         polys.append(g)
+    return polys
 
-    point_to_building = match_points(polys, points)
-    building_to_points = {}
-    for qi, bi in point_to_building.items():
-        building_to_points.setdefault(bi, []).append(qi)
-    return building_to_points, polys
+
+def associar(polys, osm_polys, points):
+    """Endereço → prédio, em três passos:
+    1. Overture (dentro ou a ~15 m);
+    2. OSM, para os que sobraram (dentro ou a ~15 m);
+    3. o prédio Overture ainda sem endereço mais próximo (até ~30 m).
+    Retorna ({qi: índice Overture}, {qi: índice OSM})."""
+    to_bldg = match_points(polys, points) if polys else {}
+    resto = [qi for qi in range(len(points)) if qi not in to_bldg]
+    to_osm = match_points(osm_polys, points, resto) if osm_polys and resto else {}
+    resto = [qi for qi in resto if qi not in to_osm]
+    livres = sorted(set(range(len(polys))) - set(to_bldg.values()))
+    if livres and resto:
+        sub = match_points([polys[i] for i in livres], points, resto,
+                           ATTACH_TOLERANCE_DEG)
+        to_bldg.update({qi: livres[j] for qi, j in sub.items()})
+    return to_bldg, to_osm
+
+
+def centro(geom):
+    """Centro do prédio; se cair fora (prédio em L/U), um ponto garantido dentro."""
+    c = geom.centroid
+    return c if geom.contains(c) else geom.representative_point()
+
+
+def tipo_dominante(tipos):
+    """Tipo mais frequente entre os endereços; `desconhecido` só se não houver outro."""
+    conhecidos = Counter(t for t in tipos if t != "desconhecido")
+    return conhecidos.most_common(1)[0][0] if conhecidos else "desconhecido"
+
+
+def fonte_of(props):
+    sources = props.get("sources") or []
+    return "; ".join(dict(s).get("dataset", "?") for s in sources) or None
+
+
+def montar(building_features, qg_features, osm_features):
+    """Monta as linhas de `buildings` (uma por endereço + prédios sem endereço)
+    e de `predios` (um por polígono, com o ponto no centro). Não toca o banco."""
+    polys = valid_polys(building_features)
+    osm_polys = valid_polys(osm_features)
+    to_bldg, to_osm = associar(polys, osm_polys, qg_features)
+
+    codes = [str(q["properties"].get("COD_UNICO_ENDERECO")) for q in qg_features]
+    dupes = {c for c, n in Counter(codes).items() if n > 1}
+    seen = Counter()
+
+    def row_id(code):
+        if code not in dupes:
+            return code
+        seen[code] += 1
+        return f"{code}#{seen[code]}"
+
+    def osm_id(oi):
+        otags = osm_features[oi]["properties"] or {}
+        return "osm-" + str(otags.get("osm_id", oi)).replace("/", "-")
+
+    predios = {}
+
+    def add_predio(pid, geom, ponto, num_pav, fonte, tipo, endereco):
+        p = predios.setdefault(pid, {"geom": geom, "ponto": ponto, "num_pav": num_pav,
+                                     "fonte": fonte, "tipos": [], "n": 0})
+        p["tipos"].append(tipo)
+        p["n"] += endereco
+
+    rows = []
+    for qi, qf in enumerate(qg_features):
+        qp = qf["properties"]
+        rid = row_id(codes[qi])
+        if qi in to_bldg:
+            bi = to_bldg[qi]
+            oprops = building_features[bi]["properties"]
+            geom, pid = polys[bi], building_features[bi]["id"]
+            num_pav, fonte = oprops.get("num_floors"), fonte_of(oprops)
+            ponto = centro(geom)
+        elif qi in to_osm:
+            oi = to_osm[qi]
+            otags = osm_features[oi]["properties"] or {}
+            oprops = {"class": otags.get("building")}
+            geom, pid = osm_polys[oi], osm_id(oi)
+            num_pav, fonte = None, "OpenStreetMap"
+            ponto = centro(geom)
+        else:
+            oprops = {}
+            x, y = qf["geometry"]["coordinates"]
+            ponto = Point(x, y)
+            geom, pid = ponto.buffer(POINT_BUFFER_DEG), rid
+            num_pav, fonte = None, "QG/CNEFE"
+        tipo = best_type(qp, oprops)
+        rows.append((
+            rid, json.dumps(mapping(geom)), _area_m2(geom), tipo,
+            qp.get("LOGRAD_NUM") or None, qp.get("DSC_LOCALIDADE") or None,
+            qp.get("DSC_ESTABELECIMENTO") or None, num_pav, fonte, pid,
+        ))
+        add_predio(pid, geom, ponto, num_pav, fonte, tipo, 1)
+
+    com_endereco = set(to_bldg.values())
+    for bi, b in enumerate(building_features):
+        geom = polys[bi]
+        if bi in com_endereco or geom.is_empty:
+            continue
+        props = b["properties"]
+        tipo, fonte = best_type(None, props), fonte_of(props)
+        rows.append((
+            b["id"], json.dumps(mapping(geom)), _area_m2(geom), tipo,
+            None, None, None, props.get("num_floors"), fonte, b["id"],
+        ))
+        add_predio(b["id"], geom, centro(geom), props.get("num_floors"), fonte, tipo, 0)
+
+    osm_com_endereco = set(to_osm.values())
+    for oi, o in enumerate(osm_features):
+        geom = osm_polys[oi]
+        if oi in osm_com_endereco or geom.is_empty:
+            continue
+        pid = osm_id(oi)
+        tipo = best_type(None, {"class": (o["properties"] or {}).get("building")})
+        rows.append((
+            pid, json.dumps(mapping(geom)), _area_m2(geom), tipo,
+            None, None, None, None, "OpenStreetMap", pid,
+        ))
+        add_predio(pid, geom, centro(geom), None, "OpenStreetMap", tipo, 0)
+
+    predio_rows = [
+        (pid, json.dumps(mapping(p["geom"])), json.dumps(mapping(p["ponto"])),
+         _area_m2(p["geom"]), tipo_dominante(p["tipos"]), p["num_pav"],
+         p["fonte"], p["n"])
+        for pid, p in predios.items()
+    ]
+    return rows, predio_rows
+
+
+def publicar(cur, tabelas=TABELAS):
+    """Troca `{t}_new` por `{t}` num único RENAME (atômico no MySQL/MariaDB)."""
+    cur.execute("DROP TABLE IF EXISTS " + ", ".join(f"{t}_old" for t in tabelas))
+    pares, velhas = [], []
+    for t in tabelas:
+        cur.execute("SHOW TABLES LIKE %s", (t,))
+        if cur.fetchone():
+            pares.append(f"{t} TO {t}_old")
+            velhas.append(f"{t}_old")
+        pares.append(f"{t}_new TO {t}")
+    cur.execute("RENAME TABLE " + ", ".join(pares))
+    if velhas:
+        cur.execute("DROP TABLE " + ", ".join(velhas))
 
 
 def main():
@@ -227,118 +390,49 @@ def main():
     qg_features = load_qg_points()
     print(f"  {len(qg_features)} pontos de endereço")
 
-    print("Relacionando endereços x prédios (espacialmente)...")
-    building_to_points, polys = relate_points_to_buildings(building_features, qg_features)
-    point_to_building = {
-        qi: bi for bi, qis in building_to_points.items() for qi in qis
-    }
-    print(f"  {len(point_to_building)} endereços dentro de prédios")
-
-    print("2ª fonte (OSM) para os endereços restantes...")
+    print("2ª fonte (OSM)...")
     osm_features = load_osm_buildings()
-    osm_polys = []
-    for b in osm_features:
-        g = shape(b["geometry"])
-        if not g.is_valid:
-            g = g.buffer(0)
-        osm_polys.append(g)
-    unmatched = [qi for qi in range(len(qg_features))
-                 if qi not in point_to_building]
-    osm_match = (match_points(osm_polys, qg_features, unmatched)
-                 if osm_polys else {})
-    print(f"  OSM: {len(osm_features)} polígonos, "
-          f"{len(osm_match)} endereços adotados")
+    print(f"  {len(osm_features)} polígonos OSM")
+
+    print("Relacionando endereços x prédios (espacialmente)...")
+    rows, predio_rows = montar(building_features, qg_features, osm_features)
+    bolinhas = sum(1 for r in rows if r[8] == "QG/CNEFE")
+    print(f"  {len(qg_features) - bolinhas} endereços em prédios, "
+          f"{bolinhas} sem prédio; {len(predio_rows)} prédios no total")
 
     print("Gravando no MySQL...")
     conn = connect_db()
     try:
         with conn.cursor() as cur:
-            cur.execute("DROP TABLE IF EXISTS buildings")
-            cur.execute(SCHEMA)
-
-            codes = [str(q["properties"].get("COD_UNICO_ENDERECO")) for q in qg_features]
-            dupes = {c for c, n in Counter(codes).items() if n > 1}
-            seen = Counter()
-
-            def row_id(code):
-                if code not in dupes:
-                    return code
-                seen[code] += 1
-                return f"{code}#{seen[code]}"
-
-            def fonte_of(props):
-                sources = props.get("sources") or []
-                return "; ".join(dict(s).get("dataset", "?") for s in sources) or None
-
-            batch = []
-            for qi, qf in enumerate(qg_features):
-                qp = qf["properties"]
-                bi = point_to_building.get(qi)
-                if bi is not None:
-                    oprops = building_features[bi]["properties"]
-                    geom = polys[bi]
-                    num_pav = oprops.get("num_floors")
-                    fonte = fonte_of(oprops)
-                elif qi in osm_match:
-                    oi = osm_match[qi]
-                    otags = osm_features[oi]["properties"] or {}
-                    oprops = {"class": otags.get("building")}
-                    geom = osm_polys[oi]
-                    num_pav = None
-                    fonte = "OpenStreetMap"
-                else:
-                    oprops = {}
-                    x, y = qf["geometry"]["coordinates"]
-                    geom = Point(x, y).buffer(POINT_BUFFER_DEG)
-                    num_pav = None
-                    fonte = "QG/CNEFE"
-                batch.append((
-                    row_id(codes[qi]), json.dumps(mapping(geom)), _area_m2(geom),
-                    best_type(qp, oprops),
-                    qp.get("LOGRAD_NUM") or None, qp.get("DSC_LOCALIDADE") or None,
-                    qp.get("DSC_ESTABELECIMENTO") or None, num_pav, fonte,
-                ))
-
-            for bi, b in enumerate(building_features):
-                if bi in building_to_points:
-                    continue
-                props = b["properties"]
-                geom = polys[bi]
-                batch.append((
-                    b["id"], json.dumps(mapping(geom)), _area_m2(geom),
-                    best_type(None, props),
-                    None, None, None, props.get("num_floors"), fonte_of(props),
-                ))
-
-            osm_to_points = {}
-            for qi, oi in osm_match.items():
-                osm_to_points.setdefault(oi, []).append(qi)
-            for oi, o in enumerate(osm_features):
-                if oi in osm_to_points:
-                    continue
-                otags = o["properties"] or {}
-                oid = str(otags.get("osm_id", oi)).replace("/", "-")
-                batch.append((
-                    f"osm-{oid}", json.dumps(mapping(osm_polys[oi])),
-                    _area_m2(osm_polys[oi]),
-                    best_type(None, {"class": otags.get("building")}),
-                    None, None, None, None, "OpenStreetMap",
-                ))
+            cur.execute("DROP TABLE IF EXISTS "
+                        + ", ".join(f"{t}_new" for t in TABELAS))
+            cur.execute(SCHEMA_BUILDINGS)
+            cur.execute(SCHEMA_PREDIOS)
 
             # SRID 0 em toda a tabela (tudo em lon/lat).
-            sql = (
-                "INSERT INTO buildings "
-                "(id, geom, area_m2, tipo, endereco, bairro, estabelecimento, num_pavimentos, fonte) "
-                "VALUES (%s, ST_GeomFromGeoJSON(%s), %s, %s, %s, %s, %s, %s, %s)"
+            sql_rows = (
+                "INSERT INTO buildings_new "
+                "(id, geom, area_m2, tipo, endereco, bairro, estabelecimento, "
+                "num_pavimentos, fonte, predio_id) "
+                "VALUES (%s, ST_GeomFromGeoJSON(%s), %s, %s, %s, %s, %s, %s, %s, %s)"
+            )
+            sql_predios = (
+                "INSERT INTO predios_new "
+                "(predio_id, geom, ponto, area_m2, tipo, num_pavimentos, fonte, n_enderecos) "
+                "VALUES (%s, ST_GeomFromGeoJSON(%s), ST_GeomFromGeoJSON(%s), "
+                "%s, %s, %s, %s, %s)"
             )
             CHUNK = 500
-            for i in range(0, len(batch), CHUNK):
-                cur.executemany(sql, batch[i:i + CHUNK])
+            for sql, batch in ((sql_rows, rows), (sql_predios, predio_rows)):
+                for i in range(0, len(batch), CHUNK):
+                    cur.executemany(sql, batch[i:i + CHUNK])
             conn.commit()
+            publicar(cur)
             cur.execute("SELECT COUNT(*), SUM(tipo='desconhecido') FROM buildings")
             total, unknown = cur.fetchone()
-            print(f"  Inseridos {total} prédios em `buildings` "
-                  f"({unknown} sem tipo identificado = desconhecido)")
+            print(f"  Inseridos {total} registros em `buildings` "
+                  f"({unknown} sem tipo identificado = desconhecido) "
+                  f"e {len(predio_rows)} em `predios`")
     finally:
         conn.close()
     print("Done.")
