@@ -40,6 +40,8 @@ const ALTURA_PADRAO_M = 5;
 const PAGE_SIZE = 1000;
 const CENTRO = [-38.223898, -9.402317] as [number, number];
 const ZOOM_INICIAL = 17.5;
+const ZOOM_3D = 16.5;
+const RAIO_3D_M = 450;
 
 // Mapa base: OpenStreetMap (tiles públicos, sem chave de API).
 const OSM_STYLE: StyleSpecification = {
@@ -90,6 +92,33 @@ function sameCoordinates(a: any, b: any): boolean {
   return a.every((value, index) => sameCoordinates(value, b[index]));
 }
 
+function geometryCenter(geometry: GeoJsonFeature['geometry']): [number, number] {
+  let minLon = Infinity;
+  let minLat = Infinity;
+  let maxLon = -Infinity;
+  let maxLat = -Infinity;
+  const visit = (value: any) => {
+    if (!Array.isArray(value)) return;
+    if (typeof value[0] === 'number' && typeof value[1] === 'number') {
+      minLon = Math.min(minLon, value[0]);
+      maxLon = Math.max(maxLon, value[0]);
+      minLat = Math.min(minLat, value[1]);
+      maxLat = Math.max(maxLat, value[1]);
+      return;
+    }
+    for (const child of value) visit(child);
+  };
+  visit(geometry.coordinates);
+  return [(minLon + maxLon) / 2, (minLat + maxLat) / 2];
+}
+
+function distanciaMetros(a: [number, number], b: [number, number]): number {
+  const lat = ((a[1] + b[1]) / 2) * (Math.PI / 180);
+  const x = (a[0] - b[0]) * 111320 * Math.cos(lat);
+  const y = (a[1] - b[1]) * 110540;
+  return Math.hypot(x, y);
+}
+
 export default function App() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
@@ -107,9 +136,11 @@ export default function App() {
     'todos',
   );
   const [showReport, setShowReport] = useState(false);
+  const [camera, setCamera] = useState({ center: CENTRO, zoom: ZOOM_INICIAL });
   const featuresById = useRef(new Map<string, GeoJsonFeature>());
   const geometryKeyById = useRef(new Map<string, string>());
-  const geometryGroups = useRef(new Map<string, { key: string; geometry: GeoJsonFeature['geometry'] }[]>());
+  const geometryCenterByKey = useRef(new Map<string, [number, number]>());
+  const geometryGroups = useRef(new Map<string, { key: string; geometry: GeoJsonFeature['geometry']; center: [number, number] }[]>());
   const nextGeometryKey = useRef(0);
   const loadedRegions = useRef<Bounds[]>([]);
   const loadingRegion = useRef(false);
@@ -142,9 +173,17 @@ export default function App() {
       setSelectedId(id == null ? null : String(id));
     };
     map.on('click', onClick);
+    const syncCamera = () => {
+      const center = map.getCenter();
+      setCamera({ center: [center.lng, center.lat], zoom: map.getZoom() });
+    };
+    map.on('moveend', syncCamera);
+    map.on('load', syncCamera);
 
     return () => {
       map.off('click', onClick);
+      map.off('moveend', syncCamera);
+      map.off('load', syncCamera);
       map.remove();
       overlayRef.current = null;
       mapRef.current = null;
@@ -199,9 +238,14 @@ export default function App() {
             const candidates = geometryGroups.current.get(hash) ?? [];
             let group = candidates.find((candidate) => candidate.geometry.type === feature.geometry.type && sameCoordinates(candidate.geometry.coordinates, feature.geometry.coordinates));
             if (!group) {
-              group = { key: `g${nextGeometryKey.current++}`, geometry: feature.geometry };
+              group = {
+                key: `g${nextGeometryKey.current++}`,
+                geometry: feature.geometry,
+                center: geometryCenter(feature.geometry),
+              };
               candidates.push(group);
               geometryGroups.current.set(hash, candidates);
+              geometryCenterByKey.current.set(group.key, group.center);
             } else {
               feature.geometry = group.geometry;
             }
@@ -306,6 +350,10 @@ export default function App() {
       getElevation: (f: any) => {
         // Bolinhas (endereço sem prédio) ficam no plano: sem volume.
         if (f.properties?.fonte === FONTE_PONTO) return 0;
+        if (camera.zoom < ZOOM_3D) return 0;
+        const geometryKey = geometryKeyById.current.get(String(f.id));
+        const center = geometryKey ? geometryCenterByKey.current.get(geometryKey) : null;
+        if (!center || distanciaMetros(center, camera.center) > RAIO_3D_M) return 0;
         const pav = f.properties?.num_pavimentos;
         return typeof pav === 'number' && pav > 0
           ? pav * 3
@@ -328,7 +376,7 @@ export default function App() {
     });
 
     return [buildings, highlight];
-  }, [mapData, selectedFeature]);
+  }, [mapData, selectedFeature, camera]);
 
   useEffect(() => {
     overlayRef.current?.setProps({ layers });
@@ -461,8 +509,8 @@ export default function App() {
             </div>
           ))}
           <div style={{ color: '#888', fontSize: 12, marginTop: 4 }}>
-            Prédios em 3D (altura ilustrativa de {ALTURA_PADRAO_M} m; real
-            quando há pavimentos); bolinhas ficam no plano.
+            3D só acima do zoom {ZOOM_3D} e até {RAIO_3D_M} m do centro da câmera;
+            restante fica em 2D. Altura estimada: {ALTURA_PADRAO_M} m.
           </div>
           <div style={{ color: '#888', fontSize: 12 }}>
             Dados carregam conforme a área visível; use zoom out para ver mais.
