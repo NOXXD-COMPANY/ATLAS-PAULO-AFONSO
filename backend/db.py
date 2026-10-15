@@ -64,8 +64,16 @@ def build_where(bbox=None, bairros=None, tipo=None, fonte=None,
         clauses.append("MBRIntersects(geom, ST_GeomFromText(%s))")
         params.append(wkt)
     if bairros:
-        clauses.append(f"bairro IN ({','.join(['%s'] * len(bairros))})")
-        params.extend(bairros)
+        sem_bairro = "Não informado" in bairros
+        bairros_validos = [b for b in bairros if b != "Não informado"]
+        bairro_clauses = []
+        if bairros_validos:
+            bairro_clauses.append(f"bairro IN ({','.join(['%s'] * len(bairros_validos))})")
+            params.extend(bairros_validos)
+        if sem_bairro:
+            bairro_clauses.append("(bairro IS NULL OR bairro = '' OR bairro = %s)")
+            params.append("Não informado")
+        clauses.append("(" + " OR ".join(bairro_clauses) + ")")
     if tipo:
         clauses.append("tipo = %s")
         params.append(tipo)
@@ -129,7 +137,7 @@ def row_to_light_feature(row):
 
 
 def fetch_all_buildings(bbox=None, bairros=None, tipo=None, fonte=None,
-                         light=False, limit=None, offset=0,
+                         light=False, limit=None, offset=0, after_id=None,
                          em_cobertura=False):
     with connect() as conn, conn.cursor() as cur:
         fields = SELECT_LIGHT_FIELDS if light else SELECT_FIELDS
@@ -137,10 +145,16 @@ def fetch_all_buildings(bbox=None, bairros=None, tipo=None, fonte=None,
         where, params = build_where(
             bbox=bbox, bairros=bairros, tipo=tipo, fonte=fonte,
             em_cobertura=em_cobertura)
+        if after_id is not None:
+            where += (" AND " if where else "WHERE ") + "id > %s"
+            params.append(after_id)
         sql = f"SELECT {fields} FROM buildings {where} ORDER BY id".rstrip()
         if limit is not None:
-            sql += " LIMIT %s OFFSET %s"
-            params = list(params) + [int(limit), int(offset)]
+            sql += " LIMIT %s"
+            params.append(int(limit))
+            if after_id is None:
+                sql += " OFFSET %s"
+                params.append(int(offset))
         cur.execute(sql, params)
         return [converter(r) for r in cur.fetchall()]
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as maplibregl from 'maplibre-gl';
 import type {
   Map as MapLibreMap,
@@ -9,7 +9,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import { MapboxOverlay } from '@deck.gl/mapbox';
 import { GeoJsonLayer } from '@deck.gl/layers';
 import { TIPOS_ORDEM, corDoTipo, FONTE_PONTO } from './constants';
-import Report from './Report';
+const Report = lazy(() => import('./Report'));
 
 interface BuildingProps {
   id: string;
@@ -37,9 +37,9 @@ const API_URL = import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:8000';
 // Prédios com `num_pavimentos` usam pavimentos × 3 m (dado real do Overture).
 const ALTURA_PADRAO_M = 5;
 
-// Carga paginada: ~5 mil features por requisição em vez de um único JSON
-// de ~200 MB, para o mapa ir pintando aos poucos sem travar o navegador.
-const PAGE_SIZE = 5000;
+const PAGE_SIZE = 1000;
+const CENTRO = [-38.223898, -9.402317] as [number, number];
+const ZOOM_INICIAL = 17.5;
 
 // Mapa base: OpenStreetMap (tiles públicos, sem chave de API).
 const OSM_STYLE: StyleSpecification = {
@@ -56,27 +56,38 @@ const OSM_STYLE: StyleSpecification = {
   layers: [{ id: 'osm', type: 'raster', source: 'osm' }],
 };
 
-function boundingBox(fc: GeoJsonFC | null): [[number, number], [number, number]] { let minLon = Infinity;
-  let minLat = Infinity;
-  let maxLon = -Infinity;
-  let maxLat = -Infinity;
-  const visit = (coords: number[][]) => {
-    for (const [lon, lat] of coords) {
-      minLon = Math.min(minLon, lon);
-      maxLon = Math.max(maxLon, lon);
-      minLat = Math.min(minLat, lat);
-      maxLat = Math.max(maxLat, lat);
+async function fetchJson(url: string, attempts = 3): Promise<any> {
+  let lastErr: unknown = null;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json();
+    } catch (err) {
+      lastErr = err;
+      if (attempt < attempts) await new Promise((r) => setTimeout(r, 1500));
     }
-  };
-  for (const f of fc?.features ?? []) {
-    const g = f.geometry as { type: string; coordinates: any[] };
-    if (g.type === 'Polygon') visit(g.coordinates[0]);
-    else if (g.type === 'MultiPolygon') for (const p of g.coordinates) visit(p[0]);
   }
-  return [
-    [minLon, minLat],
-    [maxLon, maxLat],
-  ];
+  throw lastErr;
+}
+
+type Bounds = { west: number; south: number; east: number; north: number };
+function containsBounds(outer: Bounds, inner: Bounds) {
+  return outer.west <= inner.west && outer.south <= inner.south &&
+    outer.east >= inner.east && outer.north >= inner.north;
+}
+
+function geometryHash(type: string, coordinates: unknown): string {
+  const value = `${type}:${JSON.stringify(coordinates)}`;
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i++) hash = Math.imul(hash ^ value.charCodeAt(i), 16777619);
+  return String(hash >>> 0);
+}
+
+function sameCoordinates(a: any, b: any): boolean {
+  if (a === b) return true;
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  return a.every((value, index) => sameCoordinates(value, b[index]));
 }
 
 export default function App() {
@@ -84,25 +95,34 @@ export default function App() {
   const mapRef = useRef<MapLibreMap | null>(null);
   const overlayRef = useRef<MapboxOverlay | null>(null);
 
-  const [data, setData] = useState<GeoJsonFC | null>(null);
+  const [data, setData] = useState<GeoJsonFC>({ type: 'FeatureCollection', features: [] });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [progress, setProgress] = useState({ loaded: 0, total: 0 });
+  const [loadedCount, setLoadedCount] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [selectedDetail, setSelectedDetail] = useState<{ id: string; feature: GeoJsonFeature } | null>(null);
   const [showPontos, setShowPontos] = useState(true);
   const [modoPontos, setModoPontos] = useState<'todos' | 'no-selecionado'>(
     'todos',
   );
   const [showReport, setShowReport] = useState(false);
-  const didFitRef = useRef(false);
+  const featuresById = useRef(new Map<string, GeoJsonFeature>());
+  const geometryKeyById = useRef(new Map<string, string>());
+  const geometryGroups = useRef(new Map<string, { key: string; geometry: GeoJsonFeature['geometry'] }[]>());
+  const nextGeometryKey = useRef(0);
+  const loadedRegions = useRef<Bounds[]>([]);
+  const loadingRegion = useRef(false);
+  const pendingRegion = useRef(false);
+  const firstRegionLoaded = useRef(false);
 
   useEffect(() => {
     if (!mapContainer.current) return;
     const map = new maplibregl.Map({
       container: mapContainer.current,
       style: OSM_STYLE,
-      center: [-38.223898, -9.402317],
-      zoom: 14,
+      center: CENTRO,
+      zoom: ZOOM_INICIAL,
       maxPitch: 85,
     });
     // O 3D é 100% dos nossos dados (camada deck.gl abaixo): cada volume
@@ -117,8 +137,9 @@ export default function App() {
 
     const onClick = (e: MapLayerMouseEvent) => {
       const info = overlay.pickObject({ x: e.point.x, y: e.point.y });
-      const props = info?.object?.properties as BuildingProps | undefined;
-      setSelectedId(props?.id ?? null);
+      const feature = info?.object as GeoJsonFeature | undefined;
+      const id = feature?.id ?? (feature?.properties as BuildingProps | undefined)?.id;
+      setSelectedId(id == null ? null : String(id));
     };
     map.on('click', onClick);
 
@@ -132,99 +153,108 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
+    const map = mapRef.current;
+    if (!map) return;
 
-    async function fetchJson(url: string, attempts: number): Promise<any> {
-      let lastErr: unknown = null;
-      for (let attempt = 1; attempt <= attempts; attempt++) {
-        try {
-          const res = await fetch(url);
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          return await res.json();
-        } catch (err) {
-          lastErr = err;
-          if (attempt < attempts)
-            await new Promise((r) => setTimeout(r, 2000));
-        }
+    const loadVisibleRegion = async () => {
+      if (loadingRegion.current) {
+        pendingRegion.current = true;
+        return;
       }
-      throw lastErr;
-    }
+      const bounds = map.getBounds();
+      const region: Bounds = {
+        west: Math.max(-180, bounds.getWest()),
+        south: Math.max(-90, bounds.getSouth()),
+        east: Math.min(180, bounds.getEast()),
+        north: Math.min(90, bounds.getNorth()),
+      };
+      if (loadedRegions.current.some((loaded) => containsBounds(loaded, region))) return;
 
-    async function load() {
+      loadingRegion.current = true;
+      setLoadingMore(true);
+      setError(null);
+      const wasFirstRegion = !firstRegionLoaded.current;
+      const pageSize = map.getZoom() < 13 ? 5000 : PAGE_SIZE;
       try {
-        // Total para a barra de progresso (o backend pode estar subindo).
-        // em_cobertura: esconde as bolinhas fora da área com prédios.
-        const stats = await fetchJson(
-          `${API_URL}/api/stats?em_cobertura=true`,
-          5,
-        );
-        const total =
-          typeof stats?.total === 'number' && stats.total > 0
-            ? stats.total
-            : 0;
-        if (!cancelled && total > 0) setProgress({ loaded: 0, total });
-
-        // Páginas acumuladas: o mapa pinta cada lote sem congelar a tela.
-        const all: GeoJsonFeature[] = [];
-        let offset = 0;
+        let afterId: string | null = null;
         for (;;) {
-          const fc = (await fetchJson(
-            `${API_URL}/api/buildings?em_cobertura=true&limit=${PAGE_SIZE}&offset=${offset}`,
-            3,
-          )) as GeoJsonFC;
-          if (!fc || !Array.isArray(fc.features)) {
-            throw new Error('resposta inválida da API');
-          }
-          all.push(...fc.features);
-          offset += fc.features.length;
+          const params = new URLSearchParams({
+            bbox: `${region.west},${region.south},${region.east},${region.north}`,
+            em_cobertura: 'true', light: 'true', limit: String(pageSize),
+          });
+          if (afterId) params.set('after_id', afterId);
+          const fc = await fetchJson(`${API_URL}/api/buildings?${params}`, firstRegionLoaded.current ? 3 : 5) as GeoJsonFC;
+          if (!fc || !Array.isArray(fc.features)) throw new Error('resposta inválida da API');
           if (cancelled) return;
-          setProgress({ loaded: offset, total: Math.max(total, offset) });
-          setData({ type: 'FeatureCollection', features: [...all] });
-          if (fc.features.length < PAGE_SIZE) break;
+
+          const added: GeoJsonFeature[] = [];
+          for (const feature of fc.features) {
+            const id = String(feature.id ?? feature.properties['id'] ?? '');
+            if (!id) continue;
+            afterId = id;
+            if (featuresById.current.has(id)) continue;
+            feature.id = id;
+            featuresById.current.set(id, feature);
+            const hash = geometryHash(feature.geometry.type, feature.geometry.coordinates);
+            const candidates = geometryGroups.current.get(hash) ?? [];
+            let group = candidates.find((candidate) => candidate.geometry.type === feature.geometry.type && sameCoordinates(candidate.geometry.coordinates, feature.geometry.coordinates));
+            if (!group) {
+              group = { key: `g${nextGeometryKey.current++}`, geometry: feature.geometry };
+              candidates.push(group);
+              geometryGroups.current.set(hash, candidates);
+            } else {
+              feature.geometry = group.geometry;
+            }
+            geometryKeyById.current.set(id, group.key);
+            added.push(feature);
+          }
+          if (added.length) {
+            setData((current) => ({ type: 'FeatureCollection', features: current.features.concat(added) }));
+            setLoadedCount(featuresById.current.size);
+          }
+          if (fc.features.length < pageSize) break;
         }
+        loadedRegions.current.push(region);
+        firstRegionLoaded.current = true;
       } catch (err) {
-        if (!cancelled)
-          setError(err instanceof Error ? err.message : 'Erro ao carregar dados');
+        if (!cancelled) setError(err instanceof Error ? err.message : 'Erro ao carregar dados');
       } finally {
-        if (!cancelled) setLoading(false);
+        loadingRegion.current = false;
+        setLoadingMore(false);
+        if (!cancelled && wasFirstRegion) setLoading(false);
+        if (!cancelled && pendingRegion.current) {
+          pendingRegion.current = false;
+          void loadVisibleRegion();
+        }
       }
-    }
-    load();
+    };
+
+    map.on('load', loadVisibleRegion);
+    map.on('moveend', loadVisibleRegion);
+    if (map.loaded()) void loadVisibleRegion();
     return () => {
       cancelled = true;
+      map.off('load', loadVisibleRegion);
+      map.off('moveend', loadVisibleRegion);
     };
   }, []);
 
   useEffect(() => {
-    if (!data || !mapRef.current || didFitRef.current) return;
-    const [[swLon, swLat], [neLon, neLat]] = boundingBox(data);
-    mapRef.current.fitBounds(
-      [
-        [swLon, swLat],
-        [neLon, neLat],
-      ],
-      { padding: 60, duration: 0 },
-    );
-    didFitRef.current = true;
-  }, [data]);
+    let cancelled = false;
+    if (!selectedId) return;
+    fetchJson(`${API_URL}/api/buildings/${encodeURIComponent(selectedId)}`)
+      .then((feature: GeoJsonFeature) => { if (!cancelled) setSelectedDetail({ id: selectedId, feature }); })
+      .catch((err) => { if (!cancelled) setError(err instanceof Error ? err.message : 'Erro ao carregar detalhes'); });
+    return () => { cancelled = true; };
+  }, [selectedId]);
 
-  const selectedFeature = useMemo<GeoJsonFeature | null>(() => {
-    if (!selectedId || !data) return null;
-    // Baseado nos dados completos para o painel não sumir com os filtros.
-    return data.features.find(
-      (f) => String(f.properties['id']) === selectedId,
-    ) ?? null;
-  }, [selectedId, data]);
+  const selectedFeature: GeoJsonFeature | null = (() => {
+    if (!selectedId) return null;
+    return (selectedDetail?.id === selectedId ? selectedDetail.feature : null) ?? featuresById.current.get(selectedId) ?? null;
+  })();
 
-  // Chave canônica da geometria: linhas que compartilham o polígono
-  // (1 telhado × N endereços) têm a mesma chave.
-  const geomKeys = useMemo(
-    () =>
-      data?.features.map((f) => JSON.stringify(f.geometry.coordinates)) ??
-      [],
-    [data],
-  );
   const selectedGeomKey = selectedFeature
-    ? JSON.stringify(selectedFeature.geometry.coordinates)
+    ? geometryKeyById.current.get(String(selectedFeature.id ?? selectedId)) ?? null
     : null;
 
   const visibleData = useMemo<GeoJsonFC | null>(() => {
@@ -244,15 +274,30 @@ export default function App() {
       return { type: 'FeatureCollection', features: [] };
     return {
       type: 'FeatureCollection',
-      features: data.features.filter((_, i) => geomKeys[i] === selectedGeomKey),
+      features: data.features.filter((f) => geometryKeyById.current.get(String(f.id)) === selectedGeomKey),
     };
-  }, [data, showPontos, modoPontos, geomKeys, selectedGeomKey]);
+  }, [data, showPontos, modoPontos, selectedGeomKey]);
+
+  const mapData = useMemo<GeoJsonFC | null>(() => {
+    if (!visibleData) return null;
+    const seen = new Set<string>();
+    return {
+      type: 'FeatureCollection',
+      features: visibleData.features.filter((feature) => {
+        if (feature.properties['fonte'] === FONTE_PONTO) return true;
+        const key = geometryKeyById.current.get(String(feature.id));
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      }),
+    };
+  }, [visibleData]);
 
   const layers = useMemo(() => {
     const buildings = new GeoJsonLayer({
       id: 'buildings',
       // `as any`: o tipo local é compatível com o esperado pelo deck.gl.
-      data: (visibleData ?? { type: 'FeatureCollection', features: [] }) as any,
+      data: (mapData ?? { type: 'FeatureCollection', features: [] }) as any,
       pickable: true,
       stroked: true,
       filled: true,
@@ -283,7 +328,7 @@ export default function App() {
     });
 
     return [buildings, highlight];
-  }, [visibleData, selectedFeature]);
+  }, [mapData, selectedFeature]);
 
   useEffect(() => {
     overlayRef.current?.setProps({ layers });
@@ -333,15 +378,7 @@ export default function App() {
             boxShadow: '0 1px 6px rgba(0,0,0,0.25)',
           }}
         >
-          Carregando prédios…
-          {progress.total > 0 && (
-            <>
-              <br />
-              {progress.loaded.toLocaleString('pt-BR')} de{' '}
-              {progress.total.toLocaleString('pt-BR')} (
-              {Math.round((progress.loaded / progress.total) * 100)}%)
-            </>
-          )}
+          Carregando prédios da área visível…
         </div>
       )}
 
@@ -364,9 +401,15 @@ export default function App() {
         </div>
       )}
 
+      {loadingMore && !loading && (
+        <div style={{ position: 'absolute', top: 12, left: 12, background: 'rgba(255,255,255,0.9)', padding: '8px 12px', borderRadius: 8, zIndex: 10 }}>
+          Carregando área do mapa… {loadedCount.toLocaleString('pt-BR')} features carregadas
+        </div>
+      )}
+
       {legenda.length > 0 && (
         <div className="legend">
-          <h4>Uso da edificação ({total.toLocaleString('pt-BR')})</h4>
+          <h4>Uso da edificação ({total.toLocaleString('pt-BR')} registros carregados)</h4>
           <label className="legend-toggle">
             <input
               type="checkbox"
@@ -422,7 +465,7 @@ export default function App() {
             quando há pavimentos); bolinhas ficam no plano.
           </div>
           <div style={{ color: '#888', fontSize: 12 }}>
-            Só a área com prédios mapeados; endereços fora dela ocultos.
+            Dados carregam conforme a área visível; use zoom out para ver mais.
           </div>
         </div>
       )}
@@ -433,8 +476,10 @@ export default function App() {
         </div>
       )}
 
-      {showReport && visibleData && (
-        <Report data={visibleData} onClose={() => setShowReport(false)} />
+      {showReport && (
+        <Suspense fallback={<div className="info-panel">Carregando relatório…</div>}>
+          <Report onClose={() => setShowReport(false)} />
+        </Suspense>
       )}
 
       {P && (

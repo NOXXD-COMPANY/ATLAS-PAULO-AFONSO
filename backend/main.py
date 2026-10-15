@@ -44,6 +44,7 @@ def list_buildings(
     ),
     limit: int | None = Query(default=None, ge=1, le=db.MAX_LIMIT),
     offset: int = Query(default=0, ge=0),
+    after_id: str | None = Query(default=None),
 ):
     """Edificações em GeoJSON, com filtros e paginação opcionais.
 
@@ -61,6 +62,7 @@ def list_buildings(
         light=light,
         limit=limit,
         offset=offset,
+        after_id=after_id,
         em_cobertura=em_cobertura,
     )
     body = {

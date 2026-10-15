@@ -9,7 +9,11 @@ echo "==> 1/4 Banco de dados"
 bash scripts/db.sh start
 
 echo "==> 2/4 Importação dos dados reais para o MySQL"
-"./.venv/bin/python" import_data.py
+if [ "${1:-}" = "--reimport" ]; then
+  "./.venv/bin/python" import_data.py
+else
+  "./.venv/bin/python" import_data.py --if-empty
+fi
 
 echo "==> 3/4 Backend (FastAPI em :8000)"
 if curl -sf http://127.0.0.1:8000/ >/dev/null 2>&1; then
@@ -22,8 +26,11 @@ else
 fi
 
 echo "==> 4/4 Frontend (Vite em :5173)"
-if ! cd frontend && npm install --no-audit --no-fund >/dev/null 2>&1; then
-  echo "  (npm install falhou, seguindo sem ele)"
+cd frontend
+if [ ! -x node_modules/.bin/vite ]; then
+  if ! npm install --no-audit --no-fund >/dev/null 2>&1; then
+    echo "  (npm install falhou, seguindo sem ele)"
+  fi
 fi
 if curl -sf http://127.0.0.1:5173/ >/dev/null 2>&1; then
   echo "  frontend já rodando em http://127.0.0.1:5173/"

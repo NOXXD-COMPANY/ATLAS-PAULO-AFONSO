@@ -102,9 +102,11 @@ python3 -m venv .venv
 # 2) Instalar o app (uma vez)
 cd frontend && npm install && cd ..
 
-# 3) Tudo de uma vez
+# 3) Tudo de uma vez (usa dados existentes; importe só quando necessário)
 bash scripts/run.sh
 ```
+
+Para atualizar os dados já importados, rode `bash scripts/run.sh --reimport`.
 
 Ou passo a passo:
 
@@ -166,7 +168,7 @@ Arquitetura em **camadas**, com um módulo de carga em lote separado da aplicaç
 | Método e rota | Descrição | Respostas |
 | --- | --- | --- |
 | `GET /` | Verificação de saúde (`{"status": "ok", "service": "atlas-urbano-api"}`) | 200 |
-| `GET /api/buildings` | Edificações como `FeatureCollection` GeoJSON. Filtros opcionais: `?bbox=minLng,minLat,maxLng,maxLat` (usa o índice espacial), `?bairro=` (repete para vários), `?tipo=`, `?fonte=`. `?light=true` devolve só os campos de renderização. Paginação com `?limit=` (máx. 20000) e `?offset=` (ordem estável por `id`). Sem parâmetros, devolve tudo de uma vez (comportamento antigo) | 200, 422 (bbox/limite inválido) |
+| `GET /api/buildings` | Edificações como `FeatureCollection` GeoJSON. Filtros opcionais: `?bbox=minLng,minLat,maxLng,maxLat` (usa o índice espacial), `?bairro=` (repete para vários), `?tipo=`, `?fonte=`. `?light=true` devolve só os campos de renderização. Paginação com `?limit=` (máx. 20000) e `?after_id=` (cursor por ID) ou `?offset=`. Sem parâmetros, devolve tudo de uma vez (comportamento antigo) | 200, 422 (bbox/limite inválido) |
 | `GET /api/buildings/{building_id}` | Uma edificação como `Feature` GeoJSON | 200, 404 |
 | `GET /api/stats` | Agregados (`total`, `by_tipo`, `by_bairro`, `area_total_m2`, `area_media_m2`) com os mesmos filtros de `bbox`/`bairro`/`tipo`/`fonte` | 200, 422 |
 
@@ -297,7 +299,7 @@ Atores: **Cliente** (consulta mapa e relatórios) e **Equipe Mantenedora** (carg
 
 ## Limitações conhecidas
 
-- **Carga inicial ainda é a cidade inteira**: o frontend busca tudo em páginas de 5 mil features (~13 MB cada, com progresso na tela e pintura incremental), em vez de um único JSON de ~200 MB (~18 páginas). Filtros e agregações do relatório rodam no navegador.
+- **Carga do mapa por área visível**: inicia no centro em zoom 17,5 e busca lotes leves pela área visível; zoom out ou movimento busca novas áreas. O relatório consulta agregados no servidor.
 - **"Edificação" é ambígua**: a tabela tem uma linha por endereço, então 87.951 registros não são 87.951 prédios. O relatório rotula a contagem como "Edificações".
 - **Prédios sem endereço nem tipo** (~26 mil): o Overture municipal trouxe a forma, mas sem uso conhecido (ficam `desconhecido` até conferência de campo ou 2ª fonte com atributo).
 - **Acoplamento por *magic string***: o frontend identifica "endereço sem prédio" pelo valor `fonte = 'QG/CNEFE'`. Um campo explícito (ex.: `tem_poligono`) seria mais robusto.
