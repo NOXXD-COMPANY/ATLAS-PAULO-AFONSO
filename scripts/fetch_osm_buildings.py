@@ -1,14 +1,3 @@
-#!/usr/bin/env python3
-"""Baixa polígonos de edificações do OpenStreetMap via API Overpass.
-
-API aberta, sem login e sem custo (licença ODbL, compatível com o projeto).
-Uso moderado: 1 consulta de contorno + N consultas por célula da grade.
-
-Saída: data/raw/osm/osm_buildings_paulo_afonso.geojson
-       (Polygon/MultiPolygon, properties.osm_id + tags building/*)
-
-Uso: ./.venv/bin/python scripts/fetch_osm_buildings.py
-"""
 
 import json
 import sys
