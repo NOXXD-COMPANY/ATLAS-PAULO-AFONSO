@@ -129,6 +129,7 @@ def row_to_light_feature(row):
         "id": row["id"],
         "geometry": geometry,
         "properties": {
+            "id": row["id"],
             "tipo": row.get("tipo") or "desconhecido",
             "fonte": row.get("fonte"),
             "num_pavimentos": row.get("num_pavimentos"),

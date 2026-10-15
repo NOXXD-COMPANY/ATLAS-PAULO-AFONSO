@@ -154,6 +154,7 @@ export default function App() {
       style: OSM_STYLE,
       center: CENTRO,
       zoom: ZOOM_INICIAL,
+      pitch: 55,
       maxPitch: 85,
     });
     // O 3D é 100% dos nossos dados (camada deck.gl abaixo): cada volume
@@ -337,23 +338,48 @@ export default function App() {
     };
   }, [visibleData]);
 
+  const { flatData, extrudedData } = useMemo(() => {
+    const flatFeatures: GeoJsonFeature[] = [];
+    const extrudedFeatures: GeoJsonFeature[] = [];
+    for (const feature of mapData?.features ?? []) {
+      const id = String(feature.id ?? feature.properties['id'] ?? '');
+      const key = geometryKeyById.current.get(id);
+      const center = key ? geometryCenterByKey.current.get(key) : null;
+      const nearCamera = feature.properties['fonte'] !== FONTE_PONTO &&
+        camera.zoom >= ZOOM_3D && center != null &&
+        distanciaMetros(center, camera.center) <= RAIO_3D_M;
+      (nearCamera ? extrudedFeatures : flatFeatures).push(feature);
+    }
+    return {
+      flatData: { type: 'FeatureCollection' as const, features: flatFeatures },
+      extrudedData: { type: 'FeatureCollection' as const, features: extrudedFeatures },
+    };
+  }, [mapData, camera]);
+
   const layers = useMemo(() => {
-    const buildings = new GeoJsonLayer({
-      id: 'buildings',
+    const flatBuildings = new GeoJsonLayer({
+      id: 'buildings-2d',
       // `as any`: o tipo local é compatível com o esperado pelo deck.gl.
-      data: (mapData ?? { type: 'FeatureCollection', features: [] }) as any,
+      data: flatData as any,
+      pickable: true,
+      stroked: true,
+      filled: true,
+      extruded: false,
+      wireframe: false,
+      getFillColor: (f: any) => corDoTipo(f.properties?.tipo),
+      getLineColor: [45, 45, 45, 140],
+      lineWidthMinPixels: 0.5,
+    });
+
+    const nearbyBuildings3d = new GeoJsonLayer({
+      id: 'buildings-3d-nearby',
+      data: extrudedData as any,
       pickable: true,
       stroked: true,
       filled: true,
       extruded: true,
       wireframe: false,
       getElevation: (f: any) => {
-        // Bolinhas (endereço sem prédio) ficam no plano: sem volume.
-        if (f.properties?.fonte === FONTE_PONTO) return 0;
-        if (camera.zoom < ZOOM_3D) return 0;
-        const geometryKey = geometryKeyById.current.get(String(f.id));
-        const center = geometryKey ? geometryCenterByKey.current.get(geometryKey) : null;
-        if (!center || distanciaMetros(center, camera.center) > RAIO_3D_M) return 0;
         const pav = f.properties?.num_pavimentos;
         return typeof pav === 'number' && pav > 0
           ? pav * 3
@@ -375,8 +401,8 @@ export default function App() {
       lineWidthMaxPixels: 5,
     });
 
-    return [buildings, highlight];
-  }, [mapData, selectedFeature, camera]);
+    return [flatBuildings, nearbyBuildings3d, highlight];
+  }, [flatData, extrudedData, selectedFeature]);
 
   useEffect(() => {
     overlayRef.current?.setProps({ layers });
