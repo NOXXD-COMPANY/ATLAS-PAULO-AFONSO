@@ -1,8 +1,11 @@
 """Conexão com o MySQL e consultas usadas pela API."""
 
 import json
+import hashlib
+from concurrent.futures import CancelledError
 
 import pymysql
+from shapely.geometry import shape
 
 from .config import DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
 
@@ -107,12 +110,15 @@ def connect():
 
 
 def row_to_feature(row):
-    geometry = json.loads(row["ST_AsGeoJSON(geom)"])
+    geometry_json = row["ST_AsGeoJSON(geom)"]
+    geometry = json.loads(geometry_json)
+    geometry_key = hashlib.sha1(geometry_json.encode("utf-8")).hexdigest()
     properties = {k: row[k] for k in (
         "id", "area_m2", "tipo", "endereco", "bairro",
         "estabelecimento", "num_pavimentos", "fonte",
     )}
     properties["tipo"] = properties["tipo"] or "desconhecido"
+    properties["geometry_key"] = geometry_key
     return {
         "type": "Feature",
         "id": row["id"],
@@ -123,7 +129,9 @@ def row_to_feature(row):
 
 def row_to_light_feature(row):
     """Feature mínima para renderizar o mapa (cor, filtro, 3D)."""
-    geometry = json.loads(row["ST_AsGeoJSON(geom)"])
+    geometry_json = row["ST_AsGeoJSON(geom)"]
+    geometry = json.loads(geometry_json)
+    geometry_key = hashlib.sha1(geometry_json.encode("utf-8")).hexdigest()
     return {
         "type": "Feature",
         "id": row["id"],
@@ -133,6 +141,7 @@ def row_to_light_feature(row):
             "tipo": row.get("tipo") or "desconhecido",
             "fonte": row.get("fonte"),
             "num_pavimentos": row.get("num_pavimentos"),
+            "geometry_key": geometry_key,
         },
     }
 
@@ -158,6 +167,42 @@ def fetch_all_buildings(bbox=None, bairros=None, tipo=None, fonte=None,
                 params.append(int(offset))
         cur.execute(sql, params)
         return [converter(r) for r in cur.fetchall()]
+
+
+def fetch_building_tile(bounds, cancelled=None):
+    """Busca footprints do tile e devolve features prontas para MVT."""
+    where, params = build_where(bbox=bounds)
+    if cancelled is not None and cancelled.is_set():
+        raise CancelledError()
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT {SELECT_LIGHT_FIELDS} FROM buildings {where} ORDER BY id",
+            params,
+        )
+        features = []
+        seen_geometries = set()
+        for row in cur.fetchall():
+            if cancelled is not None and cancelled.is_set():
+                raise CancelledError()
+            geometry_json = row["ST_AsGeoJSON(geom)"]
+            geometry_key = hashlib.sha1(geometry_json.encode("utf-8")).hexdigest()
+            # Muitos endereços compartilham a mesma cobertura. O mapa 2D
+            # precisa desenhar cada footprint uma vez; o detalhe continua
+            # disponível pela rota individual.
+            if geometry_key in seen_geometries:
+                continue
+            seen_geometries.add(geometry_key)
+            features.append({
+                "geometry": shape(json.loads(geometry_json)),
+                "properties": {
+                    "id": str(row["id"]),
+                    "tipo": row.get("tipo") or "desconhecido",
+                    "fonte": row.get("fonte") or "",
+                    "num_pavimentos": row.get("num_pavimentos") or 0,
+                    "geometry_key": geometry_key,
+                },
+            })
+        return features
 
 
 def fetch_stats(bbox=None, bairros=None, tipo=None, fonte=None,

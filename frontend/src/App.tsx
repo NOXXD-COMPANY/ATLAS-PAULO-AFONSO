@@ -1,14 +1,9 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as maplibregl from 'maplibre-gl';
-import type {
-  Map as MapLibreMap,
-  MapLayerMouseEvent,
-  StyleSpecification,
-} from 'maplibre-gl';
+import type { Map as MapLibreMap, MapLayerMouseEvent, StyleSpecification } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { MapboxOverlay } from '@deck.gl/mapbox';
-import { GeoJsonLayer } from '@deck.gl/layers';
-import { TIPOS_ORDEM, corDoTipo, FONTE_PONTO } from './constants';
+import { corDoTipo, FONTE_PONTO, TIPOS_ORDEM } from './constants';
+import { BUILDING_TILE_MAX_ZOOM, buildingTileUrl, prefetchNearbyTiles } from './mapTiles';
 const Report = lazy(() => import('./Report'));
 
 interface BuildingProps {
@@ -20,6 +15,7 @@ interface BuildingProps {
   estabelecimento: string | null;
   num_pavimentos: number | null;
   fonte: string | null;
+  geometry_key?: string;
 }
 
 type GeoJsonFeature = {
@@ -29,21 +25,28 @@ type GeoJsonFeature = {
   properties: BuildingProps | Record<string, unknown>;
 };
 
-export type GeoJsonFC = { type: 'FeatureCollection'; features: GeoJsonFeature[] };
-
 const API_URL = import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:8000';
-
-// Altura ilustrativa (m) quando o número de pavimentos é desconhecido.
-// Prédios com `num_pavimentos` usam pavimentos × 3 m (dado real do Overture).
-const ALTURA_PADRAO_M = 5;
-
-const PAGE_SIZE = 1000;
+const ALTURA_PADRAO_M = 15;
 const CENTRO = [-38.223898, -9.402317] as [number, number];
 const ZOOM_INICIAL = 17.5;
-const ZOOM_3D = 16.5;
-const RAIO_3D_M = 450;
 
-// Mapa base: OpenStreetMap (tiles públicos, sem chave de API).
+const TIPO_CORES_MAP: Record<string, string> = {
+  residencial: 'rgb(25,118,210)',
+  comercial: 'rgb(230,57,70)',
+  servico: 'rgb(255,143,0)',
+  religioso: 'rgb(126,87,194)',
+  institucional: 'rgb(0,188,212)',
+  hospedagem: 'rgb(76,175,80)',
+  agropecuario: 'rgb(139,195,74)',
+  desconhecido: 'rgb(158,158,158)',
+};
+
+const tipoColorExpression: any = [
+  'match', ['get', 'tipo'],
+  ...TIPOS_ORDEM.flatMap((tipo) => [tipo, TIPO_CORES_MAP[tipo]]),
+  TIPO_CORES_MAP.desconhecido,
+];
+
 const OSM_STYLE: StyleSpecification = {
   version: 8,
   sources: {
@@ -54,98 +57,64 @@ const OSM_STYLE: StyleSpecification = {
       attribution: '© OpenStreetMap contributors',
       maxzoom: 19,
     },
+    buildings: {
+      type: 'vector',
+      tiles: [buildingTileUrl(API_URL, '{z}', '{x}', '{y}')],
+      minzoom: 0,
+      maxzoom: BUILDING_TILE_MAX_ZOOM,
+    },
+    selected: {
+      type: 'geojson',
+      data: { type: 'FeatureCollection', features: [] },
+    },
   },
-  layers: [{ id: 'osm', type: 'raster', source: 'osm' }],
+  layers: [
+    { id: 'osm', type: 'raster', source: 'osm' },
+    {
+      id: 'buildings-fill', type: 'fill', source: 'buildings', 'source-layer': 'buildings',
+      paint: { 'fill-color': tipoColorExpression, 'fill-opacity': 0.82 },
+    },
+    {
+      id: 'buildings-outline', type: 'line', source: 'buildings', 'source-layer': 'buildings',
+      paint: { 'line-color': 'rgba(45,45,45,0.65)', 'line-width': 0.7 },
+    },
+    {
+      id: 'addresses-points', type: 'circle', source: 'buildings', 'source-layer': 'buildings',
+      filter: ['==', ['geometry-type'], 'Point'],
+      paint: { 'circle-color': tipoColorExpression, 'circle-radius': 4, 'circle-stroke-color': '#333', 'circle-stroke-width': 0.7 },
+    },
+    {
+      id: 'selected-building-3d', type: 'fill-extrusion', source: 'selected',
+      paint: {
+        'fill-extrusion-color': tipoColorExpression,
+        'fill-extrusion-height': ['number', ['get', 'altura_3d_m'], ALTURA_PADRAO_M],
+        'fill-extrusion-base': 0,
+        'fill-extrusion-opacity': 0.95,
+        'fill-extrusion-vertical-gradient': true,
+      },
+    },
+  ],
 };
 
-async function fetchJson(url: string, attempts = 3): Promise<any> {
-  let lastErr: unknown = null;
-  for (let attempt = 1; attempt <= attempts; attempt++) {
-    try {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return await res.json();
-    } catch (err) {
-      lastErr = err;
-      if (attempt < attempts) await new Promise((r) => setTimeout(r, 1500));
-    }
-  }
-  throw lastErr;
-}
-
-type Bounds = { west: number; south: number; east: number; north: number };
-function containsBounds(outer: Bounds, inner: Bounds) {
-  return outer.west <= inner.west && outer.south <= inner.south &&
-    outer.east >= inner.east && outer.north >= inner.north;
-}
-
-function geometryHash(type: string, coordinates: unknown): string {
-  const value = `${type}:${JSON.stringify(coordinates)}`;
-  let hash = 2166136261;
-  for (let i = 0; i < value.length; i++) hash = Math.imul(hash ^ value.charCodeAt(i), 16777619);
-  return String(hash >>> 0);
-}
-
-function sameCoordinates(a: any, b: any): boolean {
-  if (a === b) return true;
-  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
-  return a.every((value, index) => sameCoordinates(value, b[index]));
-}
-
-function geometryCenter(geometry: GeoJsonFeature['geometry']): [number, number] {
-  let minLon = Infinity;
-  let minLat = Infinity;
-  let maxLon = -Infinity;
-  let maxLat = -Infinity;
-  const visit = (value: any) => {
-    if (!Array.isArray(value)) return;
-    if (typeof value[0] === 'number' && typeof value[1] === 'number') {
-      minLon = Math.min(minLon, value[0]);
-      maxLon = Math.max(maxLon, value[0]);
-      minLat = Math.min(minLat, value[1]);
-      maxLat = Math.max(maxLat, value[1]);
-      return;
-    }
-    for (const child of value) visit(child);
-  };
-  visit(geometry.coordinates);
-  return [(minLon + maxLon) / 2, (minLat + maxLat) / 2];
-}
-
-function distanciaMetros(a: [number, number], b: [number, number]): number {
-  const lat = ((a[1] + b[1]) / 2) * (Math.PI / 180);
-  const x = (a[0] - b[0]) * 111320 * Math.cos(lat);
-  const y = (a[1] - b[1]) * 110540;
-  return Math.hypot(x, y);
+async function fetchJson(url: string, signal?: AbortSignal): Promise<any> {
+  const response = await fetch(url, { signal });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
 }
 
 export default function App() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
-  const overlayRef = useRef<MapboxOverlay | null>(null);
-
-  const [data, setData] = useState<GeoJsonFC>({ type: 'FeatureCollection', features: [] });
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadedCount, setLoadedCount] = useState(0);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [selectedDetail, setSelectedDetail] = useState<{ id: string; feature: GeoJsonFeature } | null>(null);
+  const [selectedPreview, setSelectedPreview] = useState<{ id: string; feature: GeoJsonFeature } | null>(null);
   const [showPontos, setShowPontos] = useState(true);
-  const [modoPontos, setModoPontos] = useState<'todos' | 'no-selecionado'>(
-    'todos',
-  );
+  const [modoPontos, setModoPontos] = useState<'todos' | 'no-selecionado'>('todos');
   const [showReport, setShowReport] = useState(false);
-  const [camera, setCamera] = useState({ center: CENTRO, zoom: ZOOM_INICIAL });
-  const featuresById = useRef(new Map<string, GeoJsonFeature>());
-  const geometryKeyById = useRef(new Map<string, string>());
-  const geometryCenterByKey = useRef(new Map<string, [number, number]>());
-  const geometryGroups = useRef(new Map<string, { key: string; geometry: GeoJsonFeature['geometry']; center: [number, number] }[]>());
-  const nextGeometryKey = useRef(0);
-  const loadedRegions = useRef<Bounds[]>([]);
-  const loadingRegion = useRef(false);
-  const pendingRegion = useRef(false);
-  const firstRegionLoaded = useRef(false);
+  const [mapReady, setMapReady] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [counts, setCounts] = useState<Record<string, number>>({});
+  const [total, setTotal] = useState(0);
 
   useEffect(() => {
     if (!mapContainer.current) return;
@@ -156,399 +125,206 @@ export default function App() {
       zoom: ZOOM_INICIAL,
       pitch: 55,
       maxPitch: 85,
+      maxTileCacheSize: 24,
+      maxTileCacheZoomLevels: 1,
+      cancelPendingTileRequestsWhileZooming: true,
+      renderWorldCopies: false,
     });
-    // O 3D é 100% dos nossos dados (camada deck.gl abaixo): cada volume
-    // extrusado É a feature (polígono ou bolinha), logo carrega sempre o
-    // endereço e a cor do tipo. Sem camada 3D externa.
-    const overlay = new MapboxOverlay({
-      layers: [],
-    });
-    map.addControl(overlay);
-    overlayRef.current = overlay;
     mapRef.current = map;
 
-    const onClick = (e: MapLayerMouseEvent) => {
-      const info = overlay.pickObject({ x: e.point.x, y: e.point.y });
-      const feature = info?.object as GeoJsonFeature | undefined;
-      const id = feature?.id ?? (feature?.properties as BuildingProps | undefined)?.id;
+    const onClick = (event: MapLayerMouseEvent) => {
+      const features = map.queryRenderedFeatures(event.point, {
+        layers: ['selected-building-3d', 'buildings-fill', 'addresses-points'],
+      });
+      const clickedFeature = features.find((feature) =>
+        (feature.geometry.type === 'Polygon' || feature.geometry.type === 'MultiPolygon')
+          && feature.properties?.fonte !== FONTE_PONTO)
+        ?? features[0];
+      const id = clickedFeature?.properties?.id;
+      setSelectedPreview(id == null ? null : {
+        id: String(id),
+        feature: {
+          type: 'Feature',
+          geometry: clickedFeature.geometry,
+          properties: clickedFeature.properties,
+        },
+      });
       setSelectedId(id == null ? null : String(id));
     };
-    map.on('click', onClick);
-    const syncCamera = () => {
-      const center = map.getCenter();
-      setCamera({ center: [center.lng, center.lat], zoom: map.getZoom() });
+    const onLoad = () => setMapReady(true);
+    const onError = (event: maplibregl.ErrorEvent) => {
+      const sourceId = (event as maplibregl.ErrorEvent & { sourceId?: string }).sourceId;
+      setError(`Falha no mapa${sourceId ? ` (${sourceId})` : ''}: ${event.error.message}`);
     };
-    map.on('moveend', syncCamera);
-    map.on('load', syncCamera);
+    map.on('click', onClick);
+    // `load` espera todos os tiles visíveis; o estilo já está pronto antes.
+    // Precisamos liberar a fonte de seleção sem esperar toda a rede de tiles.
+    map.on('style.load', onLoad);
+    map.on('error', onError);
+    const stopPrefetch = prefetchNearbyTiles(map, API_URL);
 
     return () => {
       map.off('click', onClick);
-      map.off('moveend', syncCamera);
-      map.off('load', syncCamera);
+      map.off('style.load', onLoad);
+      map.off('error', onError);
+      stopPrefetch();
       map.remove();
-      overlayRef.current = null;
       mapRef.current = null;
     };
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    const map = mapRef.current;
-    if (!map) return;
-
-    const loadVisibleRegion = async () => {
-      if (loadingRegion.current) {
-        pendingRegion.current = true;
-        return;
-      }
-      const bounds = map.getBounds();
-      const region: Bounds = {
-        west: Math.max(-180, bounds.getWest()),
-        south: Math.max(-90, bounds.getSouth()),
-        east: Math.min(180, bounds.getEast()),
-        north: Math.min(90, bounds.getNorth()),
-      };
-      if (loadedRegions.current.some((loaded) => containsBounds(loaded, region))) return;
-
-      loadingRegion.current = true;
-      setLoadingMore(true);
-      setError(null);
-      const wasFirstRegion = !firstRegionLoaded.current;
-      const pageSize = map.getZoom() < 13 ? 5000 : PAGE_SIZE;
-      try {
-        let afterId: string | null = null;
-        for (;;) {
-          const params = new URLSearchParams({
-            bbox: `${region.west},${region.south},${region.east},${region.north}`,
-            em_cobertura: 'true', light: 'true', limit: String(pageSize),
-          });
-          if (afterId) params.set('after_id', afterId);
-          const fc = await fetchJson(`${API_URL}/api/buildings?${params}`, firstRegionLoaded.current ? 3 : 5) as GeoJsonFC;
-          if (!fc || !Array.isArray(fc.features)) throw new Error('resposta inválida da API');
-          if (cancelled) return;
-
-          const added: GeoJsonFeature[] = [];
-          for (const feature of fc.features) {
-            const id = String(feature.id ?? feature.properties['id'] ?? '');
-            if (!id) continue;
-            afterId = id;
-            if (featuresById.current.has(id)) continue;
-            feature.id = id;
-            featuresById.current.set(id, feature);
-            const hash = geometryHash(feature.geometry.type, feature.geometry.coordinates);
-            const candidates = geometryGroups.current.get(hash) ?? [];
-            let group = candidates.find((candidate) => candidate.geometry.type === feature.geometry.type && sameCoordinates(candidate.geometry.coordinates, feature.geometry.coordinates));
-            if (!group) {
-              group = {
-                key: `g${nextGeometryKey.current++}`,
-                geometry: feature.geometry,
-                center: geometryCenter(feature.geometry),
-              };
-              candidates.push(group);
-              geometryGroups.current.set(hash, candidates);
-              geometryCenterByKey.current.set(group.key, group.center);
-            } else {
-              feature.geometry = group.geometry;
-            }
-            geometryKeyById.current.set(id, group.key);
-            added.push(feature);
-          }
-          if (added.length) {
-            setData((current) => ({ type: 'FeatureCollection', features: current.features.concat(added) }));
-            setLoadedCount(featuresById.current.size);
-          }
-          if (fc.features.length < pageSize) break;
-        }
-        loadedRegions.current.push(region);
-        firstRegionLoaded.current = true;
-      } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : 'Erro ao carregar dados');
-      } finally {
-        loadingRegion.current = false;
-        setLoadingMore(false);
-        if (!cancelled && wasFirstRegion) setLoading(false);
-        if (!cancelled && pendingRegion.current) {
-          pendingRegion.current = false;
-          void loadVisibleRegion();
-        }
-      }
-    };
-
-    map.on('load', loadVisibleRegion);
-    map.on('moveend', loadVisibleRegion);
-    if (map.loaded()) void loadVisibleRegion();
-    return () => {
-      cancelled = true;
-      map.off('load', loadVisibleRegion);
-      map.off('moveend', loadVisibleRegion);
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
     if (!selectedId) return;
-    fetchJson(`${API_URL}/api/buildings/${encodeURIComponent(selectedId)}`)
-      .then((feature: GeoJsonFeature) => { if (!cancelled) setSelectedDetail({ id: selectedId, feature }); })
-      .catch((err) => { if (!cancelled) setError(err instanceof Error ? err.message : 'Erro ao carregar detalhes'); });
-    return () => { cancelled = true; };
+    const controller = new AbortController();
+    fetchJson(`${API_URL}/api/buildings/${encodeURIComponent(selectedId)}`, controller.signal)
+      .then((feature: GeoJsonFeature) => {
+        if (!controller.signal.aborted) setSelectedDetail({ id: selectedId, feature });
+      })
+      .catch((err) => {
+        if (!controller.signal.aborted) setError(err instanceof Error ? err.message : 'Erro ao carregar detalhes');
+      });
+    return () => controller.abort();
   }, [selectedId]);
 
-  const selectedFeature: GeoJsonFeature | null = (() => {
-    if (!selectedId) return null;
-    return (selectedDetail?.id === selectedId ? selectedDetail.feature : null) ?? featuresById.current.get(selectedId) ?? null;
-  })();
-
-  const selectedGeomKey = selectedFeature
-    ? geometryKeyById.current.get(String(selectedFeature.id ?? selectedId)) ?? null
-    : null;
-
-  const visibleData = useMemo<GeoJsonFC | null>(() => {
-    if (!data) return null;
-    if (modoPontos === 'todos') {
-      if (showPontos) return data;
-      return {
-        type: 'FeatureCollection',
-        features: data.features.filter(
-          (f) => f.properties['fonte'] !== FONTE_PONTO,
-        ),
-      };
-    }
-    // 'no-selecionado': isola o prédio clicado e seus endereços
-    // (as linhas que repetem a mesma geometria). Sem seleção, vazio.
-    if (selectedGeomKey == null)
-      return { type: 'FeatureCollection', features: [] };
-    return {
-      type: 'FeatureCollection',
-      features: data.features.filter((f) => geometryKeyById.current.get(String(f.id)) === selectedGeomKey),
-    };
-  }, [data, showPontos, modoPontos, selectedGeomKey]);
-
-  const mapData = useMemo<GeoJsonFC | null>(() => {
-    if (!visibleData) return null;
-    const seen = new Set<string>();
-    return {
-      type: 'FeatureCollection',
-      features: visibleData.features.filter((feature) => {
-        if (feature.properties['fonte'] === FONTE_PONTO) return true;
-        const key = geometryKeyById.current.get(String(feature.id));
-        if (!key || seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      }),
-    };
-  }, [visibleData]);
-
-  const { flatData, extrudedData } = useMemo(() => {
-    const flatFeatures: GeoJsonFeature[] = [];
-    const extrudedFeatures: GeoJsonFeature[] = [];
-    for (const feature of mapData?.features ?? []) {
-      const id = String(feature.id ?? feature.properties['id'] ?? '');
-      const key = geometryKeyById.current.get(id);
-      const center = key ? geometryCenterByKey.current.get(key) : null;
-      const nearCamera = feature.properties['fonte'] !== FONTE_PONTO &&
-        camera.zoom >= ZOOM_3D && center != null &&
-        distanciaMetros(center, camera.center) <= RAIO_3D_M;
-      (nearCamera ? extrudedFeatures : flatFeatures).push(feature);
-    }
-    return {
-      flatData: { type: 'FeatureCollection' as const, features: flatFeatures },
-      extrudedData: { type: 'FeatureCollection' as const, features: extrudedFeatures },
-    };
-  }, [mapData, camera]);
-
-  const layers = useMemo(() => {
-    const flatBuildings = new GeoJsonLayer({
-      id: 'buildings-2d',
-      // `as any`: o tipo local é compatível com o esperado pelo deck.gl.
-      data: flatData as any,
-      pickable: true,
-      stroked: true,
-      filled: true,
-      extruded: false,
-      wireframe: false,
-      getFillColor: (f: any) => corDoTipo(f.properties?.tipo),
-      getLineColor: [45, 45, 45, 140],
-      lineWidthMinPixels: 0.5,
-    });
-
-    const nearbyBuildings3d = new GeoJsonLayer({
-      id: 'buildings-3d-nearby',
-      data: extrudedData as any,
-      pickable: true,
-      stroked: true,
-      filled: true,
-      extruded: true,
-      wireframe: false,
-      getElevation: (f: any) => {
-        const pav = f.properties?.num_pavimentos;
-        return typeof pav === 'number' && pav > 0
-          ? pav * 3
-          : ALTURA_PADRAO_M;
-      },
-      getFillColor: (f: any) => corDoTipo(f.properties?.tipo),
-      getLineColor: [45, 45, 45, 140],
-      lineWidthMinPixels: 0.5,
-    });
-
-    const highlight = new GeoJsonLayer({
-      id: 'selected-building',
-      data: (selectedFeature ? [selectedFeature] : []) as any,
-      pickable: false,
-      stroked: true,
-      filled: false,
-      getLineColor: [20, 20, 20, 255],
-      lineWidthMinPixels: 3,
-      lineWidthMaxPixels: 5,
-    });
-
-    return [flatBuildings, nearbyBuildings3d, highlight];
-  }, [flatData, extrudedData, selectedFeature]);
+  const selectedFeature = selectedDetail?.id === selectedId ? selectedDetail.feature : null;
+  const selectedProps = selectedFeature?.properties as BuildingProps | undefined;
+  const selected3dFeature = selectedFeature
+    ?? (selectedPreview?.id === selectedId ? selectedPreview.feature : null);
+  const selectedGeometryKey = selected3dFeature?.properties?.geometry_key ?? '';
 
   useEffect(() => {
-    overlayRef.current?.setProps({ layers });
-  }, [layers]);
-
-  const legenda = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const f of visibleData?.features ?? []) {
-      const t = String(f.properties['tipo'] ?? 'desconhecido');
-      counts.set(t, (counts.get(t) ?? 0) + 1);
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    const sameGeometryFilter = selectedGeometryKey
+      ? ['==', ['get', 'geometry_key'], selectedGeometryKey]
+      : ['==', ['get', 'id'], '__none__'];
+    const pointFilters: any[] = [['==', ['geometry-type'], 'Point']];
+    if (!showPontos) pointFilters.push(['!=', ['get', 'fonte'], FONTE_PONTO]);
+    if (modoPontos === 'no-selecionado') pointFilters.push(sameGeometryFilter);
+    const pointFilter = pointFilters.length === 1 ? pointFilters[0] : ['all', ...pointFilters];
+    // O modo de endereços nunca deve esconder os prédios 2D da vizinhança.
+    const polygonFilter = !showPontos
+      ? ['!=', ['get', 'fonte'], FONTE_PONTO]
+      : modoPontos === 'no-selecionado'
+        ? ['any', ['!=', ['get', 'fonte'], FONTE_PONTO], sameGeometryFilter]
+        : null;
+    if (map.getLayer('addresses-points')) map.setFilter('addresses-points', pointFilter as any);
+    for (const layer of ['buildings-fill', 'buildings-outline']) {
+      if (map.getLayer(layer)) {
+        map.setFilter(layer, polygonFilter as any);
+      }
     }
-    return TIPOS_ORDEM.map((t) => ({ tipo: t, n: counts.get(t) ?? 0 })).filter(
-      (x) => x.n > 0,
-    );
-  }, [visibleData]);
+  }, [mapReady, showPontos, modoPontos, selectedGeometryKey]);
 
-  const total = visibleData?.features.length ?? 0;
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    const updateVisibleCounts = () => {
+      const features = map.queryRenderedFeatures({ layers: ['buildings-fill', 'addresses-points'] });
+      const seen = new Set<string>();
+      const nextCounts: Record<string, number> = {};
+      for (const feature of features) {
+        const properties = feature.properties ?? {};
+        const key = String(properties.geometry_key ?? properties.id ?? feature.id ?? '');
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        const tipo = String(properties.tipo ?? 'desconhecido');
+        nextCounts[tipo] = (nextCounts[tipo] ?? 0) + 1;
+      }
+      setTotal(seen.size);
+      setCounts(nextCounts);
+    };
+    map.on('idle', updateVisibleCounts);
+    map.on('moveend', updateVisibleCounts);
+    updateVisibleCounts();
+    return () => {
+      map.off('idle', updateVisibleCounts);
+      map.off('moveend', updateVisibleCounts);
+    };
+  }, [mapReady, showPontos, modoPontos, selectedGeometryKey]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    const source = map.getSource('selected') as maplibregl.GeoJSONSource | undefined;
+    const floors = Number(selected3dFeature?.properties?.num_pavimentos);
+    const height = Number.isFinite(floors) && floors > 0
+      ? floors * 3
+      : ALTURA_PADRAO_M;
+    const isBuilding = selected3dFeature
+      && ['Polygon', 'MultiPolygon'].includes(selected3dFeature.geometry.type)
+      && selected3dFeature.properties?.fonte !== FONTE_PONTO;
+    source?.setData({
+      type: 'FeatureCollection',
+      features: isBuilding
+        ? [{
+            ...selected3dFeature,
+            properties: { ...selected3dFeature.properties, altura_3d_m: height },
+          } as any]
+        : [],
+    });
+  }, [mapReady, selected3dFeature]);
+
+  const legenda = useMemo(() => TIPOS_ORDEM
+    .map((tipo) => ({ tipo, n: counts[tipo] ?? 0 }))
+    .filter(({ n }) => n > 0), [counts]);
 
   const closePanel = useCallback(() => setSelectedId(null), []);
-
-  const P = selectedFeature?.properties as BuildingProps | undefined;
+  const P = selectedProps;
 
   return (
     <>
       <div ref={mapContainer} className="map-container" />
 
-      {!loading && visibleData && (
-        <button
-          className="report-button"
-          onClick={() => setShowReport(true)}
-        >
-          Relatório
-        </button>
-      )}
-
-      {loading && (
-        <div
-          style={{
-            position: 'absolute',
-            top: '50%',
-            left: '50%',
-            transform: 'translate(-50%,-50%)',
-            background: 'rgba(255,255,255,0.9)',
-            padding: '12px 20px',
-            borderRadius: 8,
-            zIndex: 20,
-            boxShadow: '0 1px 6px rgba(0,0,0,0.25)',
-          }}
-        >
-          Carregando prédios da área visível…
-        </div>
+      {mapReady && (
+        <button className="report-button" onClick={() => setShowReport(true)}>Relatório</button>
       )}
 
       {error && (
-        <div
-          style={{
-            position: 'absolute',
-            top: 12,
-            left: 12,
-            background: 'rgba(255,235,235,0.95)',
-            color: '#b71c1c',
-            padding: 10,
-            borderRadius: 8,
-            zIndex: 20,
-          }}
-        >
-          Erro ao carregar: {error}
-          <br />
-          Confirme que o backend FastAPI está em {API_URL}.
+        <div style={{ position: 'absolute', top: 12, left: 12, background: 'rgba(255,235,235,0.95)', color: '#b71c1c', padding: 10, borderRadius: 8, zIndex: 20 }}>
+          Erro ao carregar: {error}<br />Confirme que o backend FastAPI está em {API_URL}.
         </div>
       )}
 
-      {loadingMore && !loading && (
-        <div style={{ position: 'absolute', top: 12, left: 12, background: 'rgba(255,255,255,0.9)', padding: '8px 12px', borderRadius: 8, zIndex: 10 }}>
-          Carregando área do mapa… {loadedCount.toLocaleString('pt-BR')} features carregadas
-        </div>
-      )}
-
-      {legenda.length > 0 && (
+      {mapReady && (
         <div className="legend">
-          <h4>Uso da edificação ({total.toLocaleString('pt-BR')} registros carregados)</h4>
+          <h4>Uso da edificação ({total.toLocaleString('pt-BR')} footprints visíveis)</h4>
           <label className="legend-toggle">
-            <input
-              type="checkbox"
-              checked={showPontos}
-              onChange={(e) => setShowPontos(e.target.checked)}
-            />
+            <input type="checkbox" checked={showPontos} onChange={(event) => setShowPontos(event.target.checked)} />
             Endereços sem prédio
           </label>
           {showPontos && (
             <div className="legend-sub">
               <label className="legend-toggle">
-                <input
-                  type="radio"
-                  name="modo-pontos"
-                  checked={modoPontos === 'todos'}
-                  onChange={() => setModoPontos('todos')}
-                />
+                <input type="radio" name="modo-pontos" checked={modoPontos === 'todos'} onChange={() => setModoPontos('todos')} />
                 Tudo visível
               </label>
-              <label
-                className="legend-toggle"
-                title="Isola o prédio clicado e os endereços dele"
-              >
-                <input
-                  type="radio"
-                  name="modo-pontos"
-                  checked={modoPontos === 'no-selecionado'}
-                  onChange={() => setModoPontos('no-selecionado')}
-                />
-                Só o prédio selecionado
+              <label className="legend-toggle" title="Mostra só os endereços do prédio clicado, mantendo os prédios ao redor">
+                <input type="radio" name="modo-pontos" checked={modoPontos === 'no-selecionado'} onChange={() => setModoPontos('no-selecionado')} />
+                Só endereços do prédio selecionado
               </label>
               {modoPontos === 'no-selecionado' && !selectedFeature && (
-                <span style={{ color: '#888', fontSize: 12 }}>
-                  Clique em um prédio para isolar os endereços dele
-                </span>
+                <span style={{ color: '#888', fontSize: 12 }}>Clique em um prédio para isolar os endereços dele</span>
               )}
             </div>
           )}
           {legenda.map(({ tipo, n }) => (
             <div key={tipo} className="legend-item">
-              <span
-                className="legend-swatch"
-                style={{
-                  background: `rgb(${corDoTipo(tipo).slice(0, 3).join(',')})`,
-                }}
-              />
+              <span className="legend-swatch" style={{ background: `rgb(${corDoTipo(tipo).slice(0, 3).join(',')})` }} />
               <span>{tipo}</span>
               <span style={{ marginLeft: 'auto', color: '#888' }}>{n}</span>
             </div>
           ))}
           <div style={{ color: '#888', fontSize: 12, marginTop: 4 }}>
-            3D só acima do zoom {ZOOM_3D} e até {RAIO_3D_M} m do centro da câmera;
-            restante fica em 2D. Altura estimada: {ALTURA_PADRAO_M} m.
+            Todos os prédios ficam em 2D; somente o prédio selecionado é carregado em 3D. Altura estimada: {ALTURA_PADRAO_M} m.
           </div>
           <div style={{ color: '#888', fontSize: 12 }}>
-            Dados carregam conforme a área visível; use zoom out para ver mais.
+            Blocos visíveis carregam primeiro. Blocos vizinhos ficam prontos para a navegação; os distantes saem da renderização.
           </div>
         </div>
       )}
 
-      {!selectedFeature && !loading && (
-        <div className="empty-hint">
-          Clique em um prédio para ver os dados
-        </div>
-      )}
+      {!P && mapReady && <div className="empty-hint">{selectedId ? 'Carregando dados da edificação…' : 'Clique em um prédio para ver os dados e carregá-lo em 3D'}</div>}
 
       {showReport && (
         <Suspense fallback={<div className="info-panel">Carregando relatório…</div>}>
@@ -558,38 +334,16 @@ export default function App() {
 
       {P && (
         <div className="info-panel">
-          <button className="close" onClick={closePanel} aria-label="Fechar">
-            ×
-          </button>
+          <button className="close" onClick={closePanel} aria-label="Fechar">×</button>
           <h2>Edificação</h2>
           <dl>
-            <dt>Endereço</dt>
-            <dd>{P.endereco ?? 'Não informado'}</dd>
-            <dt>Bairro</dt>
-            <dd>{P.bairro ?? 'Não informado'}</dd>
-            <dt>Estabelecimento</dt>
-            <dd>{P.estabelecimento ?? 'Não informado'}</dd>
+            <dt>Endereço</dt><dd>{P.endereco ?? 'Não informado'}</dd>
+            <dt>Bairro</dt><dd>{P.bairro ?? 'Não informado'}</dd>
+            <dt>Estabelecimento</dt><dd>{P.estabelecimento ?? 'Não informado'}</dd>
             <dt>Tipo</dt>
-            <dd>
-              <span
-                className="tipo-badge"
-                style={{
-                  background: `rgb(${corDoTipo(P.tipo).slice(0, 3).join(',')})`,
-                }}
-              >
-                {P.tipo}
-              </span>
-            </dd>
-            <dt>Área</dt>
-            <dd>
-              {P.area_m2 != null
-                ? `${Math.round(P.area_m2).toLocaleString('pt-BR')} m²`
-                : 'Não informado'}
-            </dd>
-            <dt>Pavimentos</dt>
-            <dd>{P.num_pavimentos ?? 'Não informado'}</dd>
-            <dt>Fonte</dt>
-            <dd>{P.fonte ?? 'Não informado'}</dd>
+            <dd><span className="tipo-badge" style={{ background: `rgb(${corDoTipo(P.tipo).slice(0, 3).join(',')})` }}>{P.tipo}</span></dd>
+            <dt>Área</dt><dd>{P.area_m2 != null ? `${Math.round(P.area_m2).toLocaleString('pt-BR')} m²` : 'Não informado'}</dd>
+            <dt>Pavimentos</dt><dd>{P.num_pavimentos ?? 'Não informado'}</dd>
           </dl>
         </div>
       )}

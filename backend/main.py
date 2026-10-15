@@ -1,15 +1,26 @@
-"""API do Atlas Urbano: edificações como GeoJSON para o frontend."""
+"""API do Atlas Urbano: detalhes GeoJSON e mapa em tiles vetoriais."""
 
-from fastapi import FastAPI, HTTPException, Query
+import asyncio
+import math
+from concurrent.futures import CancelledError, ThreadPoolExecutor
+from threading import Event
+
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
+from shapely.ops import transform as transform_geometry
+from shapely.geometry import box
+import mapbox_vector_tile
 
 from . import db
+from .tile_cache import TileCache
 
 app = FastAPI(title="Atlas Urbano", version="0.1.0")
+tile_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="map-tiles")
+tile_cache = TileCache()
 
-# GeoJSON comprime ~8x: sem isso cada página de 5 mil ia com ~13 MB.
+# Mantém compactas as respostas JSON e os tiles vetoriais maiores.
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 app.add_middleware(
@@ -21,7 +32,7 @@ app.add_middleware(
 
 
 @app.get("/")
-def health():
+async def health():
     return {"status": "ok", "service": "atlas-urbano-api"}
 
 
@@ -71,6 +82,108 @@ def list_buildings(
         "features": features,
     }
     return JSONResponse(content=body)
+
+
+@app.get("/api/tiles/{z}/{x}/{y}.pbf")
+async def building_tile(z: int, x: int, y: int, request: Request):
+    """Tile vetorial binário: só transfere geometrias da área pedida."""
+    if z < 0 or z > 20:
+        raise HTTPException(status_code=404, detail="tile fora do zoom suportado")
+    scale = 1 << z
+    if x < 0 or y < 0 or x >= scale or y >= scale:
+        raise HTTPException(status_code=404, detail="tile fora do mapa")
+    key = (z, x, y)
+    body = tile_cache.get(key)
+    if body is None:
+        cancelled = Event()
+        future = tile_executor.submit(_building_tile_bytes, z, x, y, cancelled)
+        try:
+            # O cancelamento HTTP precisa chegar à consulta e ao encoder.
+            # Só cancelar o fetch deixava dezenas de gerações consumindo RAM/CPU.
+            while not future.done():
+                if await request.is_disconnected():
+                    cancelled.set()
+                    future.cancel()
+                    return Response(status_code=499)
+                await asyncio.sleep(0.05)
+            body = future.result()
+        except asyncio.CancelledError:
+            cancelled.set()
+            future.cancel()
+            raise
+        except CancelledError:
+            return Response(status_code=499)
+        tile_cache.put(key, body)
+    return Response(
+        content=body,
+        media_type="application/vnd.mapbox-vector-tile",
+        headers={"Cache-Control": "public, max-age=300"},
+    )
+
+
+def _building_tile_bytes(z: int, x: int, y: int, cancelled: Event | None = None):
+    """Gera um bloco, interrompendo antes de cada geometria se saiu da visão."""
+    def check_cancelled():
+        if cancelled is not None and cancelled.is_set():
+            raise CancelledError()
+
+    check_cancelled()
+    scale = 1 << z
+
+    def tile_lat(tile_y):
+        return math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * tile_y / scale))))
+
+    west = x / scale * 360 - 180
+    east = (x + 1) / scale * 360 - 180
+    north = tile_lat(y)
+    south = tile_lat(y + 1)
+    geographic_bounds = (west, south, east, north)
+    radius = 6378137.0
+    projected_bounds = (
+        radius * math.radians(west),
+        radius * math.asinh(math.tan(math.radians(south))),
+        radius * math.radians(east),
+        radius * math.asinh(math.tan(math.radians(north))),
+    )
+
+    # Mantém precisão submétrica também ao afastar a câmera. Uma resolução
+    # muito baixa faz pequenos prédios desaparecerem durante a quantização.
+    extent = min(1048576, 8192 << max(0, 14 - z))
+    tolerance = (projected_bounds[2] - projected_bounds[0]) / extent * 0.75
+    clip_bounds = box(*projected_bounds).buffer(tolerance * 8, cap_style=3, join_style=2)
+
+    def features():
+        rows = (db.fetch_building_tile(geographic_bounds, cancelled=cancelled)
+                if cancelled is not None else db.fetch_building_tile(geographic_bounds))
+        for feature in rows:
+            check_cancelled()
+            geometry = transform_geometry(
+                lambda lon, lat, z=None: (
+                    radius * math.radians(lon),
+                    radius * math.asinh(math.tan(math.radians(max(-85.05112878, min(85.05112878, lat))))),
+                ),
+                feature["geometry"],
+            )
+            if not geometry.is_valid:
+                geometry = geometry.buffer(0)
+            geometry = geometry.intersection(clip_bounds)
+            if geometry.is_empty or geometry.geom_type not in ("Polygon", "MultiPolygon", "Point", "MultiPoint"):
+                continue
+            yield {
+                "geometry": geometry.simplify(tolerance, preserve_topology=True),
+                "properties": feature["properties"],
+            }
+    tile = mapbox_vector_tile.encode(
+        [{"name": "buildings", "features": features()}],
+        # A projeção acima tem Y para cima. O encoder precisa invertê-lo uma
+        # vez para as coordenadas MVT (origem no topo, Y para baixo).
+        default_options={
+            "quantize_bounds": projected_bounds,
+            "extents": extent,
+            "y_coord_down": False,
+        },
+    )
+    return tile
 
 
 @app.get("/api/stats")
