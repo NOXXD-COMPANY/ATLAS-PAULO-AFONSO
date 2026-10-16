@@ -40,7 +40,7 @@ POINT_BUFFER_DEG = 0.000045
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS buildings (
     id                  VARCHAR(64)  NOT NULL PRIMARY KEY,
-    geom                GEOMETRY     NOT NULL,
+    geom                GEOMETRY     NOT NULL{srid_attr},
     area_m2             DOUBLE       NULL,
     tipo                VARCHAR(32)  NOT NULL DEFAULT 'desconhecido',
     endereco            VARCHAR(255) NULL,
@@ -263,8 +263,15 @@ def main(if_empty=False):
     conn = connect_db()
     try:
         with conn.cursor() as cur:
+            # MySQL 8 só usa o SPATIAL INDEX se a coluna fixar o SRID, e o
+            # ST_GeomFromGeoJSON dele assume 4326. O MariaDB já grava SRID 0
+            # e não aceita esse atributo.
+            cur.execute("SELECT VERSION()")
+            is_mysql = "mariadb" not in cur.fetchone()[0].lower()
             cur.execute("DROP TABLE IF EXISTS buildings")
-            cur.execute(SCHEMA)
+            cur.execute(SCHEMA.format(srid_attr=" SRID 0" if is_mysql else ""))
+            geom_sql = ("ST_GeomFromGeoJSON(%s, 1, 0)" if is_mysql
+                        else "ST_GeomFromGeoJSON(%s)")
 
             codes = [str(q["properties"].get("COD_UNICO_ENDERECO")) for q in qg_features]
             dupes = {c for c, n in Counter(codes).items() if n > 1}
@@ -351,7 +358,7 @@ def main(if_empty=False):
             sql = (
                 "INSERT INTO buildings "
                 "(id, geom, area_m2, tipo, endereco, bairro, estabelecimento, num_pavimentos, fonte) "
-                "VALUES (%s, ST_GeomFromGeoJSON(%s), %s, %s, %s, %s, %s, %s, %s)"
+                f"VALUES (%s, {geom_sql}, %s, %s, %s, %s, %s, %s, %s)"
             )
             CHUNK = 500
             for i in range(0, len(batch), CHUNK):

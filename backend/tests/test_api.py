@@ -70,7 +70,8 @@ def test_build_where_apenas_bairro():
 # --- P3: conversão para GeoJSON ---------------------------------------------
 
 def _row(full=True):
-    base = {"ST_AsGeoJSON(geom)": '{"type":"Point","coordinates":[-38.2,-9.4]}'}
+    base = {"ST_AsGeoJSON(geom)": '{"type":"Point","coordinates":[-38.2,-9.4]}',
+            "geometry_key": "k1"}
     if full:
         base.update({
             "id": "x1", "area_m2": 112.5, "tipo": None, "endereco": "Rua A",
@@ -175,7 +176,7 @@ def test_stats_endpoint(client):
     assert r.json()["total"] == 1
 
 
-@pytest.mark.parametrize("z", [2, 12, 17])
+@pytest.mark.parametrize("z", [14, 17])
 def test_tile_preserva_eixo_y_para_coordenadas_mvt(monkeypatch, z):
     """Em MVT, latitude sul deve aumentar Y a partir do topo do tile."""
     import math
@@ -361,17 +362,23 @@ def test_blocos_pendentes_nao_bloqueiam_api_e_geram_so_dois_por_vez(monkeypatch)
 
 def test_tile_consulta_todos_poligonos_do_bloco_sem_filtro_de_cobertura(monkeypatch):
     from unittest.mock import MagicMock
+    from shapely.geometry import Point, Polygon
 
-    first = _row(full=False)
+    first = {"id": "x1", "tipo": "comercial", "fonte": "OSM", "num_pavimentos": None,
+             "wkb": Point(-38.2, -9.4).wkb, "geometry_key": "k1"}
     duplicate = {**first, "id": "duplicate"}
-    other = {**first, "id": "other", "ST_AsGeoJSON(geom)":
-             '{"type":"Polygon","coordinates":[[[-38.2,-9.4],[-38.1,-9.4],[-38.1,-9.3],[-38.2,-9.4]]]}'}
+    other = {**first, "id": "other", "geometry_key": "k2",
+             "wkb": Polygon([(-38.2, -9.4), (-38.1, -9.4), (-38.1, -9.3)]).wkb}
     connection = MagicMock()
-    cursor = connection.__enter__.return_value.cursor.return_value.__enter__.return_value
+    cursor = connection.cursor.return_value.__enter__.return_value
     cursor.fetchall.return_value = [first, duplicate, other]
+    db.close_idle_connections()
     monkeypatch.setattr(db, "connect", lambda: connection)
 
-    features = db.fetch_building_tile((-38.3, -9.5, -38.0, -9.2))
+    try:
+        features = db.fetch_building_tile((-38.3, -9.5, -38.0, -9.2))
+    finally:
+        db.close_idle_connections()
     sql, params = cursor.execute.call_args.args
     assert "MBRIntersects" in sql
     assert "LIMIT" not in sql
@@ -391,7 +398,7 @@ def _db_vivo():
 
 
 @pytest.mark.skipif(not _db_vivo(), reason="MariaDB local fora do ar")
-@pytest.mark.parametrize("z,x,y", [(17, 51619, 68974), (13, 3226, 4310)])
+@pytest.mark.parametrize("z,x,y", [(17, 51619, 68974), (14, 6452, 8621)])
 def test_integracao_tile_contem_todos_footprints_visiveis(z, x, y):
     import math
     import mapbox_vector_tile
@@ -416,6 +423,16 @@ def test_integracao_tile_contem_todos_footprints_visiveis(z, x, y):
     actual = {feature["properties"]["geometry_key"] for feature in tile["features"]}
     assert expected
     assert expected <= actual, f"Footprints ausentes: {sorted(expected - actual)}"
+
+
+@pytest.mark.skipif(not _db_vivo(), reason="MariaDB local fora do ar")
+def test_integracao_geometry_key_igual_no_tile_e_no_detalhe():
+    # O mapa isola os endereços do prédio clicado comparando essas chaves.
+    tile = db.fetch_building_tile((-38.2265, -9.4035, -38.2220, -9.4000))
+    assert tile
+    for feature in tile[:25]:
+        detail = db.fetch_building(feature["properties"]["id"])
+        assert detail["properties"]["geometry_key"] == feature["properties"]["geometry_key"]
 
 
 @pytest.mark.skipif(not _db_vivo(), reason="MariaDB local fora do ar")
@@ -452,3 +469,232 @@ def test_integracao_em_cobertura_remove_so_bolinhas_fora():
     assert (total, filtrado) == (87951, 87951)
     feats = db.fetch_all_buildings(em_cobertura=True, limit=20000)
     assert len(feats) == 20000  # primeira página cheia: sem furo
+
+
+# --- Visão afastada e versão dos dados (db mockado) -------------------------
+
+def test_overview_agrupa_por_celula_e_separa_enderecos():
+    from backend.overview import build_overview
+
+    rows = [
+        {"x": 0.0001, "y": 0.0001, "tipo": "residencial", "fonte": "Google"},
+        {"x": 0.0002, "y": 0.0002, "tipo": "desconhecido", "fonte": "Google"},
+        {"x": 0.0003, "y": 0.0003, "tipo": "comercial", "fonte": "QG/CNEFE"},
+        {"x": 0.0031, "y": 0.0001, "tipo": None, "fonte": "QG/CNEFE"},
+    ]
+    geojson, bounds = build_overview(rows, cell_deg=0.001)
+    cells = {f["id"]: f["properties"] for f in geojson["features"]}
+    assert set(cells) == {"0:0", "3:0"}
+    assert cells["0:0"]["n_b"] == 2 and cells["0:0"]["n_p"] == 1
+    assert cells["0:0"]["b_residencial"] == 1 and cells["0:0"]["p_comercial"] == 1
+    # `desconhecido` não vence um uso conhecido.
+    assert cells["0:0"]["tipo_b"] == "residencial"
+    assert cells["3:0"] == {**cells["3:0"], "n_b": 0, "n_p": 1,
+                            "tipo_b": "desconhecido", "tipo": "desconhecido"}
+    assert bounds == [0.0, 0.0, 0.004, 0.001]
+
+
+def test_overview_vazio_sem_bounds():
+    from backend.overview import build_overview
+
+    assert build_overview([]) == ({"type": "FeatureCollection", "features": []}, None)
+
+
+@pytest.fixture()
+def map_api(monkeypatch):
+    from fastapi.testclient import TestClient
+    from backend import main
+    from backend.tile_cache import TileCache
+
+    state = {"version": "100", "warmups": []}
+    monkeypatch.setattr(main.db, "fetch_data_version", lambda: state["version"])
+    monkeypatch.setattr(main.db, "fetch_centroids", lambda: [
+        {"x": -38.22, "y": -9.40, "tipo": "residencial", "fonte": "Google"},
+    ])
+    monkeypatch.setattr(main, "_version_memo", {"checked": 0.0, "version": None})
+    monkeypatch.setattr(main, "_overview_memo", {})
+    monkeypatch.setattr(main, "_warmed_versions", set())
+    monkeypatch.setattr(main, "VERSION_TTL_S", -1)
+    monkeypatch.setattr(main, "tile_cache", TileCache())
+
+    class FakeExecutor:
+        def submit(self, fn, *args):
+            state["warmups"].append(args)
+
+    monkeypatch.setattr(main, "warmup_executor", FakeExecutor())
+    return TestClient(main.app), state
+
+
+def test_meta_traz_versao_bounds_e_aquece_uma_vez_por_versao(map_api):
+    from backend import main
+
+    client, state = map_api
+    body = client.get("/api/map/meta").json()
+    assert body["version"] == f"100-{main.MAP_FORMAT}"
+    west, south, east, north = body["bounds"]
+    assert west <= -38.22 < east and south <= -9.40 < north
+    client.get("/api/map/meta")
+    assert len(state["warmups"]) == 1
+    version, tiles = state["warmups"][0]
+    assert version == f"100-{main.MAP_FORMAT}" and tiles == [(12, 1613, 2155), (13, 3226, 4310), (14, 6452, 8621)]
+
+    state["version"] = "200"
+    assert client.get("/api/map/meta").json()["version"] == f"200-{main.MAP_FORMAT}"
+    assert len(state["warmups"]) == 2
+
+
+def test_overview_so_fica_no_cache_do_navegador_com_a_versao_atual(map_api):
+    from backend import main
+
+    client, state = map_api
+    atual = client.get(f"/api/map/overview?v=100-{main.MAP_FORMAT}")
+    assert atual.status_code == 200
+    assert atual.json()["features"][0]["properties"]["b_residencial"] == 1
+    assert "immutable" in atual.headers["cache-control"]
+    assert client.get("/api/map/overview?v=99").headers["cache-control"] == "no-cache"
+
+
+def test_overview_serve_cada_nivel_de_detalhe(map_api):
+    from backend.overview import LEVEL_CELL_DEG
+
+    client, _ = map_api
+    assert client.get("/api/map/meta").json()["levels"] == len(LEVEL_CELL_DEG)
+    for level, cell_deg in enumerate(LEVEL_CELL_DEG):
+        ring = client.get(f"/api/map/overview?level={level}").json()["features"][0]["geometry"]["coordinates"][0]
+        assert ring[1][0] - ring[0][0] == pytest.approx(cell_deg)
+    assert client.get(f"/api/map/overview?level={len(LEVEL_CELL_DEG)}").status_code == 422
+
+
+def test_tile_separa_cache_por_versao_dos_dados(monkeypatch, map_api):
+    from backend import main
+
+    client, _ = map_api
+    calls = []
+    monkeypatch.setattr(main, "_building_tile_bytes", lambda *args: calls.append(args) or b"tile")
+    first = client.get("/api/tiles/15/12905/17243.pbf?v=100")
+    client.get("/api/tiles/15/12905/17243.pbf?v=100")
+    assert len(calls) == 1
+    assert "immutable" in first.headers["cache-control"]
+    client.get("/api/tiles/15/12905/17243.pbf?v=200")
+    assert len(calls) == 2
+    assert client.get("/api/tiles/15/12905/17243.pbf").headers["cache-control"] == "no-cache"
+
+
+def _square_at(z, x, y, fx, fy, frac=0.01):
+    """Quadrado pequeno na fração (fx, fy) do tile z/x/y, em lon/lat."""
+    import math
+    from shapely.geometry import box as shp_box
+    scale = 1 << z
+    lng = (x + fx) / scale * 360 - 180
+    lat = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * (y + fy) / scale))))
+    d = 360 / scale * frac
+    return shp_box(lng - d, lat - d, lng + d, lat + d)
+
+
+def test_tile_afastado_traz_so_pontos_e_cada_um_uma_vez(monkeypatch):
+    import mapbox_vector_tile
+    from backend import main
+
+    z, x, y = 12, 1613, 2155
+    near_edge = _square_at(z, x, y, 0.999, 0.5, frac=0.002)  # cruza a borda leste
+    middle = _square_at(z, x, y, 0.5, 0.5)
+    rows = [
+        {"geometry": g, "properties": {"id": i, "tipo": "residencial", "fonte": "Google",
+                                       "num_pavimentos": 0, "area_m2": 120.4,
+                                       "geometry_key": "k" * 40}}
+        for i, g in (("edge", near_edge), ("middle", middle))
+    ]
+    monkeypatch.setattr(main.db, "fetch_building_tile", lambda bounds: rows)
+    tile = mapbox_vector_tile.decode(main._building_tile_bytes(z, x, y))
+    neighbour = mapbox_vector_tile.decode(main._building_tile_bytes(z, x + 1, y))
+    assert "buildings" not in tile
+    ids = sorted(f["properties"]["id"] for f in tile["dots"]["features"])
+    assert ids == ["edge", "middle"]
+    assert "dots" not in neighbour or not neighbour["dots"]["features"]
+    props = tile["dots"]["features"][0]["properties"]
+    assert props["area_m2"] == 120 and "geometry_key" not in props
+
+
+def test_tile_14_traz_pontos_e_poligonos_para_a_transicao(monkeypatch):
+    import mapbox_vector_tile
+    from backend import main
+
+    z, x, y = 14, 6452, 8621
+    square = _square_at(z, x, y, 0.5, 0.5)
+    monkeypatch.setattr(main.db, "fetch_building_tile", lambda bounds: [{
+        "geometry": square,
+        "properties": {"id": "a", "tipo": "comercial", "fonte": "Google",
+                       "num_pavimentos": 2, "area_m2": 50.0, "geometry_key": "a"},
+    }])
+    tile = mapbox_vector_tile.decode(main._building_tile_bytes(z, x, y))
+    assert len(tile["dots"]["features"]) == len(tile["buildings"]["features"]) == 1
+    assert "dots" not in mapbox_vector_tile.decode(main._building_tile_bytes(15, 2 * x, 2 * y))
+
+
+def test_tile_afastado_mantem_poligono_dos_predios_grandes(monkeypatch):
+    import mapbox_vector_tile
+    from backend import main
+
+    z, x, y = 12, 1613, 2155
+    big_area = main._min_polygon_area(z, -9.4) * 1.5
+    monkeypatch.setattr(main.db, "fetch_building_tile", lambda bounds: [
+        {"geometry": _square_at(z, x, y, 0.3, 0.5, frac=0.004),
+         "properties": {"id": "grande", "tipo": "comercial", "fonte": "Google",
+                        "area_m2": big_area, "geometry_key": "g"}},
+        {"geometry": _square_at(z, x, y, 0.7, 0.5, frac=0.0005),
+         "properties": {"id": "pequeno", "tipo": "residencial", "fonte": "Google",
+                        "area_m2": 80.0, "geometry_key": "p"}},
+    ])
+    tile = mapbox_vector_tile.decode(main._building_tile_bytes(z, x, y))
+    assert [f["properties"]["id"] for f in tile["buildings"]["features"]] == ["grande"]
+    assert [f["properties"]["id"] for f in tile["dots"]["features"]] == ["pequeno"]
+    # O limite cai pela metade da largura a cada nível de zoom.
+    assert main._min_polygon_area(13, -9.4) == pytest.approx(main._min_polygon_area(12, -9.4) / 4)
+
+
+# --- Busca e endereços do prédio ---------------------------------------------
+
+def test_busca_exige_cada_palavra_em_algum_campo_e_escapa_curingas():
+    where, params = db.build_search_where("  rua 50%_ ")
+    assert where.count("(") == 2 and " AND " in where
+    assert params[:3] == ["%rua%"] * 3
+    assert params[3:] == ["%50\%\_%"] * 3
+    assert db.build_search_where("   ") == ("", [])
+
+
+def test_busca_endpoint_valida_e_repassa(monkeypatch):
+    from fastapi.testclient import TestClient
+    from backend import main
+
+    calls = []
+    monkeypatch.setattr(main.db, "search", lambda q, limit: calls.append((q, limit)) or {"buildings": [], "bairros": []})
+    client = TestClient(main.app)
+    assert client.get("/api/search?q=a").status_code == 422
+    assert client.get("/api/search?q=veneza&limit=5").json() == {"buildings": [], "bairros": []}
+    assert calls == [("veneza", 5)]
+
+
+def test_detalhe_lista_todos_os_enderecos_do_predio(monkeypatch):
+    from fastapi.testclient import TestClient
+    from backend import main
+
+    monkeypatch.setattr(main.db, "fetch_building", lambda i: {
+        "type": "Feature", "id": i, "geometry": {"type": "Point", "coordinates": [0, 0]},
+        "properties": {"id": i, "tipo": "comercial"},
+    })
+    monkeypatch.setattr(main.db, "fetch_building_addresses", lambda i: [
+        {"id": i, "endereco": "RUA A, 1", "estabelecimento": None, "tipo": "comercial"},
+        {"id": "x", "endereco": "RUA A, 1", "estabelecimento": "PADARIA", "tipo": "comercial"},
+    ])
+    body = TestClient(main.app).get("/api/buildings/abc").json()
+    assert [e["id"] for e in body["properties"]["enderecos"]] == ["abc", "x"]
+
+
+@pytest.mark.skipif(not _db_vivo(), reason="MariaDB local fora do ar")
+def test_integracao_busca_ignora_acento_e_caixa():
+    result = db.search("sao", limit=5)
+    assert result["buildings"], "nenhum resultado para 'sao'"
+    for item in result["buildings"]:
+        text = " ".join(filter(None, [item["endereco"], item["estabelecimento"], item["bairro"]])).upper()
+        assert "SAO" in text or "SÃO" in text
+        assert -39 < item["lng"] < -37 and -10 < item["lat"] < -9

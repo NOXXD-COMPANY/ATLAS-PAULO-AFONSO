@@ -1,20 +1,32 @@
 """Conexão com o MySQL e consultas usadas pela API."""
 
 import json
-import hashlib
+import queue
 from concurrent.futures import CancelledError
+from contextlib import contextmanager
 
 import pymysql
-from shapely.geometry import shape
+import shapely
 
 from .config import DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
 
+# Identifica footprints iguais (vários endereços no mesmo prédio). O hash do
+# WKB sai quase de graça no banco; o do GeoJSON custava mais que a consulta.
+GEOMETRY_KEY = "SHA1(ST_AsBinary(geom)) AS geometry_key"
+
 SELECT_FIELDS = (
-    "id, ST_AsGeoJSON(geom), area_m2, tipo, endereco, bairro, "
-    "estabelecimento, num_pavimentos, fonte"
+    f"id, ST_AsGeoJSON(geom), {GEOMETRY_KEY}, area_m2, tipo, endereco, "
+    "bairro, estabelecimento, num_pavimentos, fonte"
 )
 
-SELECT_LIGHT_FIELDS = "id, ST_AsGeoJSON(geom), tipo, fonte, num_pavimentos"
+SELECT_LIGHT_FIELDS = (
+    f"id, ST_AsGeoJSON(geom), {GEOMETRY_KEY}, tipo, fonte, num_pavimentos"
+)
+
+# WKB é bem mais barato de transferir e decodificar que GeoJSON.
+TILE_FIELDS = (
+    f"id, ST_AsBinary(geom) AS wkb, {GEOMETRY_KEY}, tipo, fonte, num_pavimentos, area_m2"
+)
 
 MAX_LIMIT = 20000
 
@@ -106,19 +118,50 @@ def connect():
         database=DB_NAME,
         charset="utf8mb4",
         cursorclass=pymysql.cursors.DictCursor,
+        # Sem transação aberta entre pedidos: uma conexão reaproveitada
+        # precisa enxergar uma reimportação feita depois.
+        autocommit=True,
     )
 
 
+_idle_connections = queue.LifoQueue(maxsize=8)
+
+
+@contextmanager
+def connection():
+    """Conexão reaproveitada entre pedidos (abrir uma custa ~45 ms)."""
+    try:
+        conn = _idle_connections.get_nowait()
+        conn.ping(reconnect=True)
+    except queue.Empty:
+        conn = connect()
+    try:
+        yield conn
+    except BaseException:
+        conn.close()
+        raise
+    try:
+        _idle_connections.put_nowait(conn)
+    except queue.Full:
+        conn.close()
+
+
+def close_idle_connections():
+    while True:
+        try:
+            _idle_connections.get_nowait().close()
+        except queue.Empty:
+            return
+
+
 def row_to_feature(row):
-    geometry_json = row["ST_AsGeoJSON(geom)"]
-    geometry = json.loads(geometry_json)
-    geometry_key = hashlib.sha1(geometry_json.encode("utf-8")).hexdigest()
+    geometry = json.loads(row["ST_AsGeoJSON(geom)"])
     properties = {k: row[k] for k in (
         "id", "area_m2", "tipo", "endereco", "bairro",
         "estabelecimento", "num_pavimentos", "fonte",
     )}
     properties["tipo"] = properties["tipo"] or "desconhecido"
-    properties["geometry_key"] = geometry_key
+    properties["geometry_key"] = row["geometry_key"]
     return {
         "type": "Feature",
         "id": row["id"],
@@ -129,9 +172,7 @@ def row_to_feature(row):
 
 def row_to_light_feature(row):
     """Feature mínima para renderizar o mapa (cor, filtro, 3D)."""
-    geometry_json = row["ST_AsGeoJSON(geom)"]
-    geometry = json.loads(geometry_json)
-    geometry_key = hashlib.sha1(geometry_json.encode("utf-8")).hexdigest()
+    geometry = json.loads(row["ST_AsGeoJSON(geom)"])
     return {
         "type": "Feature",
         "id": row["id"],
@@ -141,7 +182,7 @@ def row_to_light_feature(row):
             "tipo": row.get("tipo") or "desconhecido",
             "fonte": row.get("fonte"),
             "num_pavimentos": row.get("num_pavimentos"),
-            "geometry_key": geometry_key,
+            "geometry_key": row["geometry_key"],
         },
     }
 
@@ -149,7 +190,7 @@ def row_to_light_feature(row):
 def fetch_all_buildings(bbox=None, bairros=None, tipo=None, fonte=None,
                          light=False, limit=None, offset=0, after_id=None,
                          em_cobertura=False):
-    with connect() as conn, conn.cursor() as cur:
+    with connection() as conn, conn.cursor() as cur:
         fields = SELECT_LIGHT_FIELDS if light else SELECT_FIELDS
         converter = row_to_light_feature if light else row_to_feature
         where, params = build_where(
@@ -169,40 +210,139 @@ def fetch_all_buildings(bbox=None, bairros=None, tipo=None, fonte=None,
         return [converter(r) for r in cur.fetchall()]
 
 
+SEARCH_FIELDS = ("endereco", "estabelecimento", "bairro")
+MAX_SEARCH_TERMS = 6
+
+
+def _like_escape(term):
+    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def build_search_where(query):
+    """Cada palavra precisa aparecer em algum campo (endereço, estabelecimento
+    ou bairro). A collation da tabela já ignora acento e caixa."""
+    terms = query.split()[:MAX_SEARCH_TERMS]
+    clauses, params = [], []
+    for term in terms:
+        pattern = f"%{_like_escape(term)}%"
+        clauses.append("(" + " OR ".join(f"{field} LIKE %s" for field in SEARCH_FIELDS) + ")")
+        params.extend([pattern] * len(SEARCH_FIELDS))
+    return " AND ".join(clauses), params
+
+
+def search(query, limit=8):
+    """Prédios e bairros que batem com a busca, com um ponto para o mapa ir até lá."""
+    where, params = build_search_where(query)
+    if not where:
+        return {"buildings": [], "bairros": []}
+    prefix = f"{_like_escape(query.strip())}%"
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, endereco, bairro, estabelecimento, tipo, "
+            "ST_X(ST_Centroid(geom)) AS lng, ST_Y(ST_Centroid(geom)) AS lat "
+            f"FROM buildings WHERE {where} "
+            "AND (endereco IS NOT NULL OR estabelecimento IS NOT NULL) "
+            # Quem começa com o texto digitado vem primeiro.
+            "ORDER BY (estabelecimento LIKE %s OR endereco LIKE %s) DESC, endereco "
+            "LIMIT %s",
+            [*params, prefix, prefix, int(limit)],
+        )
+        buildings = [
+            {**row, "tipo": row["tipo"] or "desconhecido",
+             "lng": float(row["lng"]), "lat": float(row["lat"])}
+            for row in cur.fetchall()
+        ]
+        terms = query.split()[:MAX_SEARCH_TERMS]
+        cur.execute(
+            "SELECT bairro, COUNT(*) AS total, "
+            "AVG(ST_X(ST_Centroid(geom))) AS lng, AVG(ST_Y(ST_Centroid(geom))) AS lat "
+            "FROM buildings WHERE "
+            + " AND ".join(["bairro LIKE %s"] * len(terms))
+            + " GROUP BY bairro ORDER BY total DESC LIMIT 4",
+            [f"%{_like_escape(t)}%" for t in terms],
+        )
+        bairros = [
+            {"bairro": row["bairro"], "total": int(row["total"]),
+             "lng": float(row["lng"]), "lat": float(row["lat"])}
+            for row in cur.fetchall()
+        ]
+    return {"buildings": buildings, "bairros": bairros}
+
+
+def fetch_building_addresses(building_id):
+    """Todos os endereços que dividem o footprint deste prédio."""
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT o.id, o.endereco, o.estabelecimento, o.tipo FROM buildings t "
+            "JOIN buildings o ON MBRIntersects(o.geom, t.geom) AND ST_Equals(o.geom, t.geom) "
+            "WHERE t.id = %s ORDER BY o.endereco, o.id LIMIT 100",
+            (building_id,),
+        )
+        return [{**row, "tipo": row["tipo"] or "desconhecido"} for row in cur.fetchall()]
+
+
+def fetch_data_version():
+    """Muda a cada importação: o import_data.py recria a tabela."""
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT UNIX_TIMESTAMP(CREATE_TIME) AS created "
+            "FROM information_schema.TABLES "
+            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'buildings'"
+        )
+        row = cur.fetchone()
+    return str(int(row["created"])) if row and row["created"] is not None else "0"
+
+
+def fetch_centroids():
+    """Um ponto por footprint; endereços no mesmo prédio contam uma vez."""
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT ST_X(ST_Centroid(geom)) AS x, ST_Y(ST_Centroid(geom)) AS y, "
+            f"tipo, fonte, {GEOMETRY_KEY} FROM buildings ORDER BY id"
+        )
+        rows = cur.fetchall()
+    unique = {}
+    for row in rows:
+        unique.setdefault(row["geometry_key"], row)
+    return list(unique.values())
+
+
 def fetch_building_tile(bounds, cancelled=None):
     """Busca footprints do tile e devolve features prontas para MVT."""
     where, params = build_where(bbox=bounds)
     if cancelled is not None and cancelled.is_set():
         raise CancelledError()
-    with connect() as conn, conn.cursor() as cur:
+    with connection() as conn, conn.cursor() as cur:
         cur.execute(
-            f"SELECT {SELECT_LIGHT_FIELDS} FROM buildings {where} ORDER BY id",
+            f"SELECT {TILE_FIELDS} FROM buildings {where} ORDER BY id",
             params,
         )
-        features = []
-        seen_geometries = set()
-        for row in cur.fetchall():
-            if cancelled is not None and cancelled.is_set():
-                raise CancelledError()
-            geometry_json = row["ST_AsGeoJSON(geom)"]
-            geometry_key = hashlib.sha1(geometry_json.encode("utf-8")).hexdigest()
-            # Muitos endereços compartilham a mesma cobertura. O mapa 2D
-            # precisa desenhar cada footprint uma vez; o detalhe continua
-            # disponível pela rota individual.
-            if geometry_key in seen_geometries:
-                continue
-            seen_geometries.add(geometry_key)
-            features.append({
-                "geometry": shape(json.loads(geometry_json)),
-                "properties": {
-                    "id": str(row["id"]),
-                    "tipo": row.get("tipo") or "desconhecido",
-                    "fonte": row.get("fonte") or "",
-                    "num_pavimentos": row.get("num_pavimentos") or 0,
-                    "geometry_key": geometry_key,
-                },
-            })
-        return features
+        rows = cur.fetchall()
+    if cancelled is not None and cancelled.is_set():
+        raise CancelledError()
+    # Muitos endereços compartilham a mesma cobertura. O mapa 2D precisa
+    # desenhar cada footprint uma vez; o detalhe continua disponível pela
+    # rota individual.
+    unique = {}
+    for row in rows:
+        unique.setdefault(row["geometry_key"], row)
+    rows = list(unique.values())
+    geometries = shapely.from_wkb([row["wkb"] for row in rows])
+    return [
+        {
+            "geometry": geometry,
+            "properties": {
+                "id": str(row["id"]),
+                "tipo": row.get("tipo") or "desconhecido",
+                "fonte": row.get("fonte") or "",
+                "num_pavimentos": row.get("num_pavimentos") or 0,
+                # O ponto da visão intermediária tem a mesma área do prédio.
+                "area_m2": float(row.get("area_m2") or 0),
+                "geometry_key": row["geometry_key"],
+            },
+        }
+        for row, geometry in zip(rows, geometries)
+    ]
 
 
 def fetch_stats(bbox=None, bairros=None, tipo=None, fonte=None,
@@ -211,7 +351,7 @@ def fetch_stats(bbox=None, bairros=None, tipo=None, fonte=None,
     where, params = build_where(
         bbox=bbox, bairros=bairros, tipo=tipo, fonte=fonte,
         em_cobertura=em_cobertura)
-    with connect() as conn, conn.cursor() as cur:
+    with connection() as conn, conn.cursor() as cur:
         cur.execute(f"SELECT COUNT(*) AS n FROM buildings {where}".rstrip(),
                     params)
         total = cur.fetchone()["n"] or 0
@@ -242,7 +382,7 @@ def fetch_stats(bbox=None, bairros=None, tipo=None, fonte=None,
 
 
 def fetch_building(building_id: str):
-    with connect() as conn, conn.cursor() as cur:
+    with connection() as conn, conn.cursor() as cur:
         cur.execute(f"SELECT {SELECT_FIELDS} FROM buildings WHERE id = %s", (building_id,))
         row = cur.fetchone()
         return row_to_feature(row) if row else None
