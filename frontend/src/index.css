@@ -1248,10 +1248,38 @@ input:focus-visible {
   display: grid;
   place-items: center;
   padding: 16px;
-  background: var(--app-bg, #0b0f16);
+  overflow: hidden;
+  background: var(--bg);
+}
+
+/* Brilhos de fundo no estilo do app; o --accent dos dois temas serve. */
+.auth-screen::before,
+.auth-screen::after {
+  content: '';
+  position: absolute;
+  width: 60vmax;
+  height: 60vmax;
+  border-radius: 50%;
+  filter: blur(90px);
+  opacity: 0.16;
+  pointer-events: none;
+}
+
+.auth-screen::before {
+  top: -20vmax;
+  right: -15vmax;
+  background: radial-gradient(circle, var(--accent), transparent 65%);
+}
+
+.auth-screen::after {
+  bottom: -25vmax;
+  left: -15vmax;
+  background: radial-gradient(circle, var(--accent), transparent 65%);
+  opacity: 0.1;
 }
 
 .auth-card {
+  position: relative;
   width: min(380px, 100%);
   padding: 24px 22px;
   border-radius: 22px;
@@ -1264,3 +1292,9 @@ input:focus-visible {
 .auth-card .muted { margin: 0 4px; }
 
 .auth-card .auth { margin: 0; }
+
+.auth-theme {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+}

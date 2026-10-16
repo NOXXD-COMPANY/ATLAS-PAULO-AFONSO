@@ -153,7 +153,8 @@ Abra **http://127.0.0.1:5173/**. Para parar o banco: `bash scripts/db.sh stop`.
 
 **Configuração**
 
-- Banco (backend): `backend/config.py`.
+- Banco (backend): `backend/config.py` (lê `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` e `DB_SSL_CA` do ambiente; sem `DB_SSL_CA`, conecta sem TLS como no ambiente local).
+- Auth: `JWT_SECRET` (obrigatório em produção) e `JWT_EXPIRE_MINUTES` (padrão 480) no ambiente; o front manda `Authorization: Bearer` em toda rota `/api`.
 - Banco (carga): constantes no topo de `import_data.py`. **Atenção:** hoje elas apontam para uma instância diferente da que o `db.sh` sobe (porta e usuário distintos), e a credencial está escrita no arquivo. Alinhar com `config.py` e mover para variáveis de ambiente (ver [Limitações conhecidas](#limitações-conhecidas)).
 - Frontend: a variável `VITE_API_URL` define o endereço da API (padrão `http://127.0.0.1:8000`).
 - CORS: o backend aceita apenas `localhost:5173` e `127.0.0.1:5173`.

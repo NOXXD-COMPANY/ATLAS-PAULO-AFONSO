@@ -110,29 +110,33 @@ def create_token(user_id: int) -> str:
     )
 
 
-bearer = HTTPBearer(auto_error=True)
-
-
-def get_current_user(
-    credenciais: HTTPAuthorizationCredentials = Depends(bearer),
-):
-    """Dependência das rotas protegidas: valida o Bearer e devolve o usuário.
-
-    Sem token, expirado, adulterado ou de usuário inexistente → 401.
-    """
-    try:
-        dados = jwt.decode(
-            credenciais.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM]
-        )
-        user_id = int(dados.get("sub", ""))
-    except (jwt.PyJWTError, ValueError):
-        raise HTTPException(status_code=401, detail="sessão inválida ou expirada")
+def find_user_by_id(user_id: int):
+    """Dados públicos do usuário, ou None se não existir mais."""
     with db.connection() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT id, nome, email, criado_em FROM users WHERE id = %s",
             (user_id,),
         )
         row = cur.fetchone()
-    if row is None:
+    return _publico(row) if row is not None else None
+
+
+bearer = HTTPBearer(auto_error=True)
+
+
+def get_current_user(
+    credenciais: HTTPAuthorizationCredentials = Depends(bearer),
+):
+    """Dependência das rotas protegidas: validação stateless, só assinatura
+    + expiração, sem ida ao banco (é o que deixa os tiles rápidos mesmo com
+    o banco remoto). Token ausente, expirado ou adulterado → 401.
+
+    A existência do usuário é checada só no /api/auth/eu (abertura do app).
+    """
+    try:
+        dados = jwt.decode(
+            credenciais.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM]
+        )
+        return {"id": int(dados.get("sub", ""))}
+    except (jwt.PyJWTError, ValueError):
         raise HTTPException(status_code=401, detail="sessão inválida ou expirada")
-    return _publico(row)

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import type { Theme } from '../constants';
 import { Icon } from './Icon';
 
 export type AuthUser = { id: number; nome: string; email: string };
@@ -122,10 +123,24 @@ export function AuthBox({ apiUrl, user, onAuth, onLogout }: Props) {
 }
 
 /** Tela cheia e sem saída: sem JWT válido o app nem monta o mapa. */
-export function AuthScreen({ apiUrl, onAuth }: { apiUrl: string; onAuth: Props['onAuth'] }) {
+export function AuthScreen({ apiUrl, onAuth, theme, onToggleTheme }: {
+  apiUrl: string;
+  onAuth: Props['onAuth'];
+  theme: Theme;
+  onToggleTheme: () => void;
+}) {
   return (
     <div className="auth-screen">
       <div className="auth-card glass">
+        <button
+          type="button"
+          className="icon-button auth-theme"
+          aria-label={theme === 'light' ? 'Mudar para tema escuro' : 'Mudar para tema claro'}
+          title={theme === 'light' ? 'Mudar para tema escuro' : 'Mudar para tema claro'}
+          onClick={onToggleTheme}
+        >
+          <Icon name={theme === 'light' ? 'moon' : 'sun'} size={16} />
+        </button>
         <header className="brand">
           <span className="brand-mark"><Icon name="building" size={22} /></span>
           <div>

@@ -484,5 +484,9 @@ def login(dados: UserLogin):
 
 @app.get("/api/auth/eu", response_model=UserPublic)
 def eu(usuario: dict = Depends(auth.get_current_user)):
-    """Quem é o dono do token. O front usa para validar a sessão salva."""
-    return usuario
+    """Quem é o dono do token. Único ponto que confere o usuário no banco;
+    o front usa para validar a sessão salva a cada abertura."""
+    atual = auth.find_user_by_id(usuario["id"])
+    if atual is None:
+        raise HTTPException(status_code=401, detail="sessão inválida ou expirada")
+    return atual

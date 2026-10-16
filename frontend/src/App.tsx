@@ -228,7 +228,10 @@ export default function App() {
   // --- Mapa --------------------------------------------------------------
 
   useEffect(() => {
-    if (!mapContainer.current) return;
+    // O div do mapa só existe na vista logada; sem `user` nas
+    // dependências o efeito rodava uma vez na tela de login e nunca
+    // mais (foi assim que o mapa parou de montar após o login).
+    if (!user || !mapContainer.current) return;
     const map = new maplibregl.Map({
       container: mapContainer.current,
       style: basemapUrl(themeRef.current),
@@ -305,7 +308,7 @@ export default function App() {
       map.remove();
       mapRef.current = null;
     };
-  }, [notify, select]);
+  }, [notify, select, user]);
 
   // Troca de tema no mapa existente
   const prevThemeRef = useRef(theme);
@@ -564,8 +567,14 @@ export default function App() {
     return (
       <AuthScreen
         apiUrl={API_URL}
+        theme={theme}
+        onToggleTheme={toggleTheme}
         onAuth={(token, u) => {
           guardarSessao({ token, user: u });
+          if (!lerSessao()) {
+            notify('Este navegador bloqueou o armazenamento: a sessão não pode ser mantida.', 'error');
+            return;
+          }
           setUser(u);
         }}
       />
@@ -617,6 +626,10 @@ export default function App() {
             user={user}
             onAuth={(token, u) => {
               guardarSessao({ token, user: u });
+              if (!lerSessao()) {
+                notify('Este navegador bloqueou o armazenamento: a sessão não pode ser mantida.', 'error');
+                return;
+              }
               setUser(u);
               setShowAuth(false);
             }}

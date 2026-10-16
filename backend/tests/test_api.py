@@ -829,7 +829,6 @@ def test_jwt_guarda_eu_e_as_rotas(monkeypatch):
 
     _sem_usuario_fake()
     linha = {"id": 7, "nome": "T", "email": "t@x.com", "criado_em": None}
-    monkeypatch.setattr(main.db, "connection", _conexao_falsa(linha))
     monkeypatch.setattr(main.db, "fetch_data_version", lambda: "100")
     monkeypatch.setattr(main, "_version_memo", {"checked": 0.0, "version": None})
     monkeypatch.setattr(main, "_overview_for", lambda v: {"bounds": [0, 0, 1, 1], "cells": []})
@@ -838,11 +837,25 @@ def test_jwt_guarda_eu_e_as_rotas(monkeypatch):
     token = main.auth.create_token(7)
     auth = {"Authorization": f"Bearer {token}"}
 
-    assert client.get("/api/auth/eu", headers=auth).json()["email"] == "t@x.com"
+    # Guarda stateless: o mapa abre sem nenhuma ida ao banco.
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _banco_proibido():
+        raise AssertionError("guarda encostou no banco")
+        yield
+
+    monkeypatch.setattr(main.db, "connection", _banco_proibido)
     assert client.get("/api/map/meta", headers=auth).status_code == 200
+    assert client.get("/api/map/meta").status_code == 401  # sem token
+    assert client.get("/api/map/meta", headers={"Authorization": "Bearer adulterado"}).status_code == 401
+
+    # O /eu é o único que confere o usuário no banco.
+    monkeypatch.setattr(main.db, "connection", _conexao_falsa(linha))
+    assert client.get("/api/auth/eu", headers=auth).json()["email"] == "t@x.com"
     assert client.get("/api/auth/eu").status_code == 401  # sem token
-    assert client.get("/api/map/meta").status_code == 401  # rota guardada
-    assert client.get("/api/auth/eu", headers={"Authorization": "Bearer adulterado"}).status_code == 401
+    monkeypatch.setattr(main.db, "connection", _conexao_falsa(None))
+    assert client.get("/api/auth/eu", headers=auth).status_code == 401  # usuário sumiu
 
 
 def test_jwt_expirado_e_de_outro_usuario(monkeypatch):
@@ -851,21 +864,13 @@ def test_jwt_expirado_e_de_outro_usuario(monkeypatch):
     from backend import main
 
     _sem_usuario_fake()
-    linha = {"id": 7, "nome": "T", "email": "t@x.com", "criado_em": None}
-    monkeypatch.setattr(main.db, "connection", _conexao_falsa(linha))
     client = TestClient(main.app)
 
     monkeypatch.setattr(main.auth, "JWT_EXPIRE_MINUTES", -1)
     expirado = main.auth.create_token(7)
     assert client.get(
         "/api/auth/eu", headers={"Authorization": f"Bearer {expirado}"}
-    ).status_code == 401
-
-    monkeypatch.setattr(main.db, "connection", _conexao_falsa(None))
-    valido = main.auth.create_token(7)
-    assert client.get(
-        "/api/auth/eu", headers={"Authorization": f"Bearer {valido}"}
-    ).status_code == 401  # usuário sumiu do banco
+    ).status_code == 401  # nem chega ao banco
 
 
 @pytest.mark.skipif(not _db_vivo(), reason="MariaDB local fora do ar")
@@ -895,3 +900,42 @@ def test_integracao_cadastro_e_login_reais():
     assert eu.status_code == 200
     assert eu.json()["id"] == user["id"]
     assert client.get("/api/auth/eu").status_code == 401
+
+
+# --- TLS do banco (Aiven): só liga o ssl com DB_SSL_CA ----------------------
+
+def test_connect_sem_ssl_por_padrao(monkeypatch):
+    from backend import db
+
+    chamadas = {}
+    monkeypatch.setattr(db, "DB_SSL_CA", "")
+    monkeypatch.setattr(db.pymysql, "connect", lambda **kw: chamadas.update(kw) or "conn")
+    assert db.connect() == "conn"
+    assert "ssl" not in chamadas
+
+
+def test_connect_com_ssl_no_aiven(monkeypatch):
+    from backend import db
+
+    chamadas = {}
+    monkeypatch.setattr(db, "DB_SSL_CA", "/certs/ca.pem")
+    monkeypatch.setattr(db.pymysql, "connect", lambda **kw: chamadas.update(kw) or "conn")
+    assert db.connect() == "conn"
+    assert chamadas["ssl"] == {"ca": "/certs/ca.pem"}
+
+
+def test_import_com_ssl_no_aiven(monkeypatch):
+    import import_data
+
+    chamadas = {}
+
+    class FakePyMySQL:
+        @staticmethod
+        def connect(**kw):
+            chamadas.update(kw)
+            return "conn"
+
+    monkeypatch.setattr(import_data, "pymysql", FakePyMySQL)
+    monkeypatch.setattr(import_data, "DB_SSL_CA", "/certs/ca.pem")
+    assert import_data.connect_db() == "conn"
+    assert chamadas["ssl"] == {"ca": "/certs/ca.pem"}

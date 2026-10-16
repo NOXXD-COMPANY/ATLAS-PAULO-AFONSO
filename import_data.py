@@ -5,6 +5,7 @@ uma linha por endereço, mais os prédios sem nenhum endereço."""
 import json
 import math
 import argparse
+import os
 from collections import Counter
 
 import pymysql
@@ -25,11 +26,13 @@ MUNICIPIO_BOUNDARY = f"{DATA_DIR}/municipio_boundary.geojson"
 QG_ENDERECOS = f"{DATA_DIR}/qg/qg_810_endereco_Munic2924009.json"
 MUNICIPIO = "2924009"  # Paulo Afonso/BA
 
-DB_HOST = "127.0.0.1"
-DB_PORT = 3307
-DB_USER = "root"
-DB_PASSWORD = "ar120604"
-DB_NAME = "atlas_urbano"
+DB_HOST = os.environ.get("DB_HOST", "127.0.0.1")
+DB_PORT = int(os.environ.get("DB_PORT", "3307"))
+DB_USER = os.environ.get("DB_USER", "root")
+DB_PASSWORD = os.environ.get("DB_PASSWORD", "ar120604")
+DB_NAME = os.environ.get("DB_NAME", "atlas_urbano")
+# TLS do banco (ex.: Aiven). Sem DB_SSL_CA, conecta puro (ambiente local).
+DB_SSL_CA = os.environ.get("DB_SSL_CA", "")
 
 # ~15 m de tolerância na borda (ex.: porta na fachada, erro de GPS).
 POINT_TOLERANCE_DEG = 0.000135
@@ -92,9 +95,12 @@ OVERTURE_CLASS_TO_TIPO = {
 
 
 def connect_db():
-    return pymysql.connect(
+    kwargs = dict(
         host=DB_HOST, port=DB_PORT, user=DB_USER, password=DB_PASSWORD, database=DB_NAME, charset="utf8mb4"
     )
+    if DB_SSL_CA:
+        kwargs["ssl"] = {"ca": DB_SSL_CA}
+    return pymysql.connect(**kwargs)
 
 
 def _area_m2(polygon) -> float:

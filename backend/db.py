@@ -8,7 +8,7 @@ from contextlib import contextmanager
 import pymysql
 import shapely
 
-from .config import DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
+from .config import DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME, DB_SSL_CA
 
 # Identifica footprints iguais (vários endereços no mesmo prédio). O hash do
 # WKB sai quase de graça no banco; o do GeoJSON custava mais que a consulta.
@@ -110,7 +110,7 @@ def build_where(bbox=None, bairros=None, tipo=None, fonte=None,
 
 
 def connect():
-    return pymysql.connect(
+    kwargs = dict(
         host=DB_HOST,
         port=DB_PORT,
         user=DB_USER,
@@ -122,6 +122,9 @@ def connect():
         # precisa enxergar uma reimportação feita depois.
         autocommit=True,
     )
+    if DB_SSL_CA:
+        kwargs["ssl"] = {"ca": DB_SSL_CA}
+    return pymysql.connect(**kwargs)
 
 
 _idle_connections = queue.LifoQueue(maxsize=8)
