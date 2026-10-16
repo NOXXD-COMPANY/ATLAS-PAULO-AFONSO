@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Inicia/para o MariaDB local do Atlas Urbano (Porta 3307 / Windows Nativo)
+# Inicia/para o MariaDB local do Atlas Urbano (Porta 3307).
+# Cross-platform: Linux usa /usr/bin/mariadb*; Windows (Git Bash/MSYS)
+# usa "C:/Program Files/MariaDB 13.0/...".
 set -e
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -10,14 +12,39 @@ mkdir -p /tmp/mariadb-tmp
 DB_PORT="3307"
 ROOT_PASSWORD="ar120604"
 
-WIN_DATADIR="$(cygpath -w "$DATADIR" 2>/dev/null || echo "$DATADIR" | sed 's|^/c/|C:/|;s|/|\\|g')"
-WIN_CONF="$(cygpath -w "$CONF" 2>/dev/null || echo "$CONF" | sed 's|^/c/|C:/|;s|/|\\|g')"
+case "$(uname -s 2>/dev/null || echo Linux)" in
+  MINGW*|MSYS*|CYGWIN*|Windows_NT)
+    IS_WINDOWS=1
+    ;;
+  *)
+    IS_WINDOWS=0
+    ;;
+esac
 
-MARIADBD="C:/Program Files/MariaDB 13.0/bin/mariadbd.exe"
-MARIADB_CLIENT="C:/Program Files/MariaDB 13.0/bin/mariadb.exe"
-MARIADB_ADMIN="C:/Program Files/MariaDB 13.0/bin/mariadb-admin.exe"
+if [ "$IS_WINDOWS" = "1" ]; then
+  EFF_DATADIR="$(cygpath -w "$DATADIR" 2>/dev/null || echo "$DATADIR" | sed 's|^/c/|C:/|;s|/|\\|g')"
+  EFF_CONF="$(cygpath -w "$CONF" 2>/dev/null || echo "$CONF" | sed 's|^/c/|C:/|;s|/|\\|g')"
+  MARIADBD="C:/Program Files/MariaDB 13.0/bin/mariadbd.exe"
+  MARIADB_CLIENT="C:/Program Files/MariaDB 13.0/bin/mariadb.exe"
+  MARIADB_ADMIN="C:/Program Files/MariaDB 13.0/bin/mariadb-admin.exe"
+  MARIADB_INSTALL_DB="C:/Program Files/MariaDB 13.0/bin/mariadb-install-db.exe"
+  SOCKET_FILE="$EFF_DATADIR/mysql.sock"
+  PID_FILE="$EFF_DATADIR/mysql.pid"
+  ERR_LOG="$EFF_DATADIR/mysql.err"
+else
+  EFF_DATADIR="$DATADIR"
+  EFF_CONF="$CONF"
+  MARIADBD="/usr/bin/mariadbd"
+  MARIADB_CLIENT="/usr/bin/mariadb"
+  MARIADB_ADMIN="/usr/bin/mariadb-admin"
+  MARIADB_INSTALL_DB="/usr/bin/mariadb-install-db"
+  SOCKET_FILE="$DATADIR/mysql.sock"
+  PID_FILE="$DATADIR/mysql.pid"
+  ERR_LOG="$DATADIR/mysql.err"
+fi
 
 if [ -n "$ROOT_PASSWORD" ]; then
+  # shellcheck disable=SC2086
   CLIENT_AUTH="-h 127.0.0.1 -P $DB_PORT -u root -p$ROOT_PASSWORD"
   ADMIN_AUTH="-h 127.0.0.1 -P $DB_PORT -u root -p$ROOT_PASSWORD"
 else
@@ -25,22 +52,58 @@ else
   ADMIN_AUTH="-h 127.0.0.1 -P $DB_PORT -u root"
 fi
 
+wait_ready() {
+  # Aguarda o servidor responder (até ~30s). Tenta com senha e sem
+  # senha: um datadir recém-criado pode ainda estar sem senha de root.
+  for _ in $(seq 1 60); do
+    # shellcheck disable=SC2086
+    if "$MARIADB_ADMIN" $ADMIN_AUTH ping >/dev/null 2>&1; then
+      return 0
+    fi
+    if "$MARIADB_ADMIN" -h 127.0.0.1 -P "$DB_PORT" -u root ping >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  return 1
+}
+
 case "${1:-start}" in
   start)
     if [ ! -d "$DATADIR/mysql" ]; then
       echo "Inicializando data dir do MariaDB..."
-      "C:/Program Files/MariaDB 13.0/bin/mariadb-install-db.exe" --datadir="$WIN_DATADIR" >/dev/null 2>&1 || \
-      "$MARIADBD" --initialize-insecure --datadir="$WIN_DATADIR"
+      if [ "$IS_WINDOWS" = "1" ]; then
+        "$MARIADB_INSTALL_DB" --datadir="$EFF_DATADIR" >/dev/null 2>&1 || \
+        "$MARIADBD" --initialize-insecure --datadir="$EFF_DATADIR"
+      else
+        "$MARIADB_INSTALL_DB" --datadir="$EFF_DATADIR" \
+          --auth-root-authentication-method=normal >/dev/null 2>&1
+      fi
     fi
 
-    echo "Iniciando MariaDB na porta $DB_PORT..."
-    nohup "$MARIADBD" --defaults-file="$WIN_CONF" --datadir="$WIN_DATADIR" \
-      --port="$DB_PORT" --pid-file="$WIN_DATADIR/mysql.pid" \
-      --log-error="$WIN_DATADIR/mysql.err" --bind-address=127.0.0.1 >/dev/null 2>&1 &
+    # Já rodando? Reaproveita em vez de subir outra instância.
+    # shellcheck disable=SC2086
+    if "$MARIADB_ADMIN" $ADMIN_AUTH ping >/dev/null 2>&1; then
+      echo "MariaDB já rodando na porta $DB_PORT."
+    else
+      # Remove restos stale de execução anterior (sock/pid sem servidor).
+      rm -f "$SOCKET_FILE" "$PID_FILE" 2>/dev/null || true
 
-    sleep 3
+      echo "Iniciando MariaDB na porta $DB_PORT..."
+      # shellcheck disable=SC2086
+      nohup "$MARIADBD" --defaults-file="$EFF_CONF" --datadir="$EFF_DATADIR" \
+        --port="$DB_PORT" --pid-file="$PID_FILE" \
+        --socket="$SOCKET_FILE" \
+        --log-error="$ERR_LOG" --bind-address=127.0.0.1 >/dev/null 2>&1 &
+
+      if ! wait_ready; then
+        echo "ERRO: MariaDB não respondeu na porta $DB_PORT. Veja $ERR_LOG" >&2
+        exit 1
+      fi
+    fi
 
     echo "Configurando banco de dados e permissões..."
+    # shellcheck disable=SC2086
     "$MARIADB_CLIENT" $CLIENT_AUTH <<'SQL'
 CREATE DATABASE IF NOT EXISTS atlas_urbano CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE USER IF NOT EXISTS 'atlas'@'127.0.0.1' IDENTIFIED BY 'atlas';
@@ -53,6 +116,7 @@ SQL
     ;;
   stop)
     echo "Parando MariaDB..."
+    # shellcheck disable=SC2086
     "$MARIADB_ADMIN" $ADMIN_AUTH shutdown 2>/dev/null || true
     echo "MariaDB parado."
     ;;
