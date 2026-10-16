@@ -1,6 +1,6 @@
 # Atlas Urbano de Paulo Afonso — MVP
 
-Visualizador de **edificações reais** sobre um mapa interativo, aplicado a Paulo Afonso/BA. O sistema cruza fontes abertas (polígonos de prédios do Overture Maps, com o OpenStreetMap como fallback, e endereços do CNEFE/IBGE), grava o resultado num banco espacial e o expõe por uma API REST em GeoJSON, consumida por um frontend com mapa 3D, legenda por tipo de uso, painel de detalhes e relatório exportável.
+Visualizador de **edificações reais** sobre um mapa interativo, aplicado a Paulo Afonso/BA. O sistema cruza fontes abertas (polígonos de prédios do Overture Maps, com o OpenStreetMap como fallback, e endereços do CNEFE/IBGE), grava o resultado num banco espacial e o expõe por uma API REST (tiles vetoriais para o mapa, GeoJSON para detalhe e agregados), consumida por um frontend com mapa 3D em níveis de detalhe, busca, filtros por tipo de uso, cartão do prédio e relatório exportável.
 
 > **Retrato estatístico, não cadastro oficial.** Pegada de edificação ≠ área construída, e *footprint* ≠ terreno. Os números refletem as fontes usadas (CNEFE 2022, Overture e OSM) e herdam as limitações delas (ver [Limitações conhecidas](#limitações-conhecidas)).
 
@@ -56,9 +56,11 @@ dados abertos: Overture + OSM (polígonos) · QG/CNEFE (endereços)
         ↓
     MariaDB/MySQL (tabela espacial `buildings`)
         ↓
-    FastAPI (/api/buildings, /api/buildings/{id}, /api/stats)
+    FastAPI
+      /api/map/meta · /api/map/overview · /api/tiles/{z}/{x}/{y}.pbf   (mapa)
+      /api/buildings/{id} · /api/search · /api/stats                   (detalhe, busca, relatório)
         ↓
-    React + MapLibre + deck.gl
+    React + MapLibre GL (tiles vetoriais, 3D) sobre o mapa base OpenFreeMap
         ↓
           MAPA
 ```
@@ -131,7 +133,7 @@ Ou passo a passo:
 # (opcional, demora vários minutos) baixa a 2ª fonte de polígonos do OSM
 ./.venv/bin/python scripts/fetch_osm_buildings.py
 
-bash scripts/db.sh start            # sobe o MariaDB local (:3306, db atlas_urbano)
+bash scripts/db.sh start            # sobe o MariaDB local (:3307, db atlas_urbano)
 ./.venv/bin/python import_data.py   # importa e relaciona os dados
 ./.venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8000 &
 cd frontend && npm run dev -- --port 5173 &
@@ -143,7 +145,7 @@ Abra **http://127.0.0.1:5173/**. Para parar o banco: `bash scripts/db.sh stop`.
 
 | Serviço | Endereço |
 | --- | --- |
-| MariaDB local | `127.0.0.1:3306` (banco `atlas_urbano`) |
+| MariaDB local | `127.0.0.1:3307` (banco `atlas_urbano`) |
 | Backend FastAPI | `http://127.0.0.1:8000` (docs interativas em `/docs`) |
 | Frontend Vite | `http://127.0.0.1:5173` |
 
@@ -165,33 +167,72 @@ Arquitetura em **camadas**, com um módulo de carga em lote separado da aplicaç
 | Coleta | Baixar a 2ª fonte de polígonos (OSM) | Python, API Overpass |
 | Carga (ETL) | Ler, cruzar, normalizar e gravar os dados | Python, Shapely (STRtree), PyMySQL |
 | Persistência | Armazenar geometrias com índice espacial | MariaDB/MySQL (`GEOMETRY` + `SPATIAL INDEX`) |
-| Backend | Expor os dados como GeoJSON via HTTP, com filtros, paginação e agregados | FastAPI, Pydantic, Uvicorn, PyMySQL |
-| Frontend | Renderizar, filtrar e gerar relatório | React, Vite, TypeScript, MapLibre GL, deck.gl |
+| Backend | Gerar os tiles vetoriais e as grades do mapa; expor detalhe, busca e agregados em JSON/GeoJSON | FastAPI, Uvicorn, PyMySQL, Shapely 2 + NumPy, mapbox-vector-tile, Pydantic |
+| Frontend | Renderizar o mapa em níveis de detalhe, buscar, filtrar, detalhar e gerar relatório | React 19, Vite, TypeScript, MapLibre GL 6 |
+| Mapa base | Ruas, água e rótulos em volta dos prédios | OpenFreeMap (estilo `dark`, dados do OpenStreetMap), recolorido no cliente |
 | Orquestração | Subir o ambiente local | Scripts Bash (`run.sh`, `db.sh`) |
-| Testes | Validar filtros, contratos e endpoints | pytest, httpx |
+| Testes | Validar filtros, contratos, endpoints e a lógica do mapa | pytest, httpx, `node:test` |
 
 **Componentes**
 
 - **Coleta (`scripts/fetch_osm_buildings.py`)**: divide o município numa grade 6×6, consulta o Overpass célula a célula (com pausa de 8 s entre consultas), refaz em quadrantes menores o que falhar e grava um GeoJSON.
 - **Carga (`import_data.py`)**: `load_buildings` (une e recorta o Overture), `load_osm_buildings`, `load_qg_points`, `match_points` e `relate_points_to_buildings` (junção espacial), `best_type` (cascata de classificação) e `main` (recria a tabela e insere em lotes de 500).
 - **Backend**:
-  - `main.py`: rotas, GZip e CORS;
-  - `db.py`: conexão, validação do `bbox`, montagem do `WHERE`, consultas, agregados e conversão linha → Feature;
+  - `main.py`: rotas, GZip e CORS; versão do mapa (`/api/map/meta`), grades (`/api/map/overview`) e geração dos tiles vetoriais (`/api/tiles`), com pré-aquecimento em segundo plano;
+  - `overview.py`: grade de densidade da visão afastada (contagem por tipo e uso predominante por célula);
+  - `tile_cache.py`: cache em memória dos tiles já comprimidos, com limite de tempo, quantidade e bytes;
+  - `db.py`: conexões reaproveitadas, validação do `bbox`, montagem do `WHERE`, consultas (tiles, centroides, busca, endereços do mesmo footprint, versão dos dados), agregados e conversão linha → Feature;
   - `schemas.py`: contratos Pydantic (feature leve, completa e estatísticas);
   - `config.py`: credenciais.
 - **Frontend**:
-  - `App.tsx`: mapa, camadas deck.gl, carga paginada com progresso, seleção, legenda e painel de detalhes;
-  - `Report.tsx`: filtros, totais por tipo e por bairro, exportação para PDF;
-  - `constants.ts`: ordem e cores dos tipos de uso, fonte única para mapa, legenda e relatório;
+  - `App.tsx`: cria o mapa, busca a versão em `/api/map/meta`, liga as camadas de dados, cuida da seleção (com `?predio=` na URL), da legenda pela área visível, dos atalhos e dos avisos;
+  - `mapLayers.ts`: estilo do mapa base, fontes e camadas do MapLibre (grades, pontos, polígonos, 3D e seleção) e aplicação dos filtros em todas as escalas;
+  - `mapTiles.ts`: os níveis de detalhe e as transições entre eles, URLs versionadas, expressões de cor e contagem das grades e contagem da legenda (testado em `tests/mapTiles.test.mjs`);
+  - `components/`: `SearchBox` (busca), `LayersPanel` (contagem e filtros), `BuildingCard` (cartão do prédio), `MapControls` (controles do mapa) e `Icon`;
+  - `Report.tsx`: relatório em janela, com filtros por uso e bairro, totais de `/api/stats` e exportação para PDF (carregado sob demanda);
+  - `constants.ts`: ordem, rótulos e cores dos tipos de uso e altura dos prédios, fonte única para mapa, legenda, cartão e relatório;
+  - `format.ts`: texto do CNEFE (caixa alta) em caixa de título, números e áreas no formato pt-BR;
   - `main.tsx`: ponto de entrada; configura explicitamente o *worker* do MapLibre, que o Vite não empacotava (o mapa nascia em branco).
 
-**Divisão de papéis no frontend**
+**Divisão de papéis**
 
-| Biblioteca | Papel |
+| Parte | Papel |
 | --- | --- |
-| React | Estado e interface (painéis, legenda, relatório) |
-| MapLibre GL | Mapa base (OpenStreetMap), câmera e navegação |
-| deck.gl | Renderização em massa via WebGL: polígonos, seleção por clique, extrusão 3D |
+| React | Estado e interface (painel, busca, cartão, controles, relatório) |
+| MapLibre GL | Mapa base vetorial, tiles e grades dos prédios, extrusão 3D, clique, câmera e navegação |
+| Backend | Recorta, simplifica e codifica os prédios em tiles MVT; calcula as grades; serve detalhe, busca e agregados |
+
+### Mapa: níveis de detalhe
+
+A cidade inteira não é baixada de uma vez. O mapa troca de representação conforme o zoom, e cada escala vem de uma rota própria:
+
+| Zoom | O que aparece | Origem |
+| --- | --- | --- |
+| Abaixo de 11 | Grade de densidade de ~175 m | `/api/map/overview?level=0` |
+| 11 a 12 | Grade de densidade de ~88 m | `/api/map/overview?level=1` |
+| 12 a 14 | Prédios pequenos como pontos (um disco com a área real do prédio); os que têm pelo menos ~3 px de largura continuam polígonos | `/api/tiles`, camadas `dots` e `buildings` |
+| 14 em diante | Todos os prédios como polígonos, em 3D | `/api/tiles`, camada `buildings` (acima do 16 o MapLibre amplia o tile 16) |
+
+- **Grades**: cada célula traz a contagem por tipo, separando prédios (`b_<tipo>`) e endereços sem prédio (`p_<tipo>`). A cor é a do uso predominante entre os tipos visíveis (`desconhecido` só pinta quando nenhum uso conhecido aparece) e a opacidade cresce com a quantidade. Clicar numa célula aproxima dois níveis de zoom.
+- **Tiles**: o servidor busca os footprints do tile pelo índice espacial, desenha cada footprint uma vez (endereços do mesmo prédio compartilham a geometria), projeta, recorta e simplifica de forma vetorizada (Shapely/GEOS) e codifica em MVT com GZip. Cada ponto vai só no tile que contém o centro do prédio. A geração roda num pool de *threads* e é interrompida se o navegador desistir do tile.
+- **Transições**: na troca de nível, a camada nova chega à opacidade total antes de a anterior começar a sair; os prédios em 3D crescem do chão entre os zooms 14 e 15.
+- **Legenda**: conta o que está na tela, na camada que domina aquele zoom (células, pontos ou polígonos), sem contar duas vezes um prédio partido entre tiles.
+- **URLs versionadas**: `/api/map/meta` devolve a versão (`<data de criação da tabela buildings>-<MAP_FORMAT>`), a área com prédios e o número de níveis. A versão entra como `?v=` nas URLs dos tiles e das grades, que então saem com `Cache-Control: immutable` (1 dia). Uma reimportação recria a tabela e muda a versão; `MAP_FORMAT` (em `main.py`) é incrementado quando muda o conteúdo dos tiles. A área com prédios limita o pedido de tiles e a navegação (com 25% de margem).
+- **Pré-aquecimento**: a primeira chamada a `/api/map/meta` de cada versão dispara, em segundo plano, a geração dos tiles dos zooms 12 a 14 que têm prédios. Eles ficam no cache em memória (até 128 MB / 4.096 tiles, 24 h), então a primeira aproximação já não espera a geração.
+
+### Interface
+
+Visual em "vidro líquido", à maneira do Liquid Glass da Apple: painéis translúcidos com desfoque e brilho na borda sobre um mapa escuro, cores de sistema do modo escuro para os tipos de uso. Com `prefers-reduced-transparency` os painéis ficam opacos, e `prefers-reduced-motion` desliga as animações.
+
+- **Painel lateral** (no celular, até 720 px, vira uma folha inferior com alça, que se expande ao buscar ou selecionar).
+- **Busca** (`/api/search`): endereço, estabelecimento ou bairro, ignorando acento e caixa; navegável pelo teclado e aberta com a tecla `/`. Escolher um prédio leva o mapa até ele e o seleciona; escolher um bairro centraliza o bairro.
+- **Filtros e legenda**: total de edificações na tela e contagem por uso. Um clique mostra ou esconde um uso, clique duplo deixa só ele, e esconder todos volta a mostrar todos. Os filtros valem para grades, pontos e polígonos. Os endereços sem prédio (pontos do CNEFE) podem ser escondidos ou limitados aos do prédio selecionado.
+- **Cartão do prédio**: uso, nome do estabelecimento ou endereço, bairro, área, pavimentos e altura (marcada como estimada quando não há pavimentos); ações para centralizar, copiar o endereço e abrir no OpenStreetMap; a lista **"Também neste prédio"** com todos os endereços que dividem o footprint (clicáveis); a fonte do footprint e o ID copiável.
+- **Controles**: aproximar e afastar, bússola (volta ao norte), vista inclinada ou de cima, todos os prédios em 3D ou só o selecionado, cidade inteira, minha localização (geolocalização do navegador) e relatório; escala métrica no canto.
+- **URL compartilhável**: a câmera fica no endereço como `#mapa=zoom/lat/lng/rumo/inclinação`, e o prédio selecionado como `?predio=<id>`. Um link só com `?predio=` leva o mapa até o prédio.
+- **Avisos**: pílula "Carregando prédios…" enquanto chegam tiles, e avisos curtos para servidor fora do ar, falha ao carregar ou localização indisponível. `Esc` fecha o relatório ou a seleção.
+
+**Relatório**: janela sobre o mapa com filtros por uso e por bairro (com busca; nomes de bairro que só diferem por um número no fim são agrupados), total de edificações e barras por uso e por bairro, tudo calculado no banco por `/api/stats` (com `em_cobertura=true`). **Exportar PDF** usa a impressão do navegador, com regras `@media print` que incluem os filtros aplicados.
 
 ## API
 
@@ -204,7 +245,7 @@ Arquitetura em **camadas**, com um módulo de carga em lote separado da aplicaç
 | `GET /api/search?q=` | Busca para a barra do mapa: prédios (endereço, estabelecimento) e bairros, com um ponto para centralizar. Ignora acento e caixa | 200, 422 |
 | `GET /api/map/meta` | Versão dos dados (entra nas URLs do mapa) e a área com prédios | 200 |
 | `GET /api/map/overview?level=` | Grade de densidade da visão afastada (GeoJSON); `level=0` ~175 m, `level=1` ~88 m | 200, 422 |
-| `GET /api/tiles/{z}/{x}/{y}.pbf?v=` | Tiles vetoriais (MVT) do mapa: pontos nos zooms 12 a 14 (camada `dots`) e polígonos a partir do 14 (camada `buildings`) | 200, 404 |
+| `GET /api/tiles/{z}/{x}/{y}.pbf?v=` | Tiles vetoriais (MVT) do mapa: pontos dos prédios pequenos nos zooms 12 a 14 (camada `dots`) e polígonos (camada `buildings`): os grandes desde o 12, todos a partir do 14 | 200, 404 |
 
 **Parâmetros de `GET /api/buildings`** (os filtros também valem para `/api/stats`, exceto `light`, `limit` e `offset`):
 
@@ -275,7 +316,7 @@ erDiagram
 
 **Regras do modelo-alvo**
 
-- **Um telhado para N endereços** (prédio vertical, lote com múltiplos endereços), resolvido pela tabela associativa `SPATIAL_MATCH`. No MVP, o mesmo polígono se repete em várias linhas, e o frontend reconhece essas linhas comparando a geometria (modo "Só o prédio selecionado").
+- **Um telhado para N endereços** (prédio vertical, lote com múltiplos endereços), resolvido pela tabela associativa `SPATIAL_MATCH`. No MVP, o mesmo polígono se repete em várias linhas: os tiles desenham cada geometria uma vez (pelo `geometry_key`, um hash dela) e `/api/buildings/{id}` lista em `enderecos` as linhas com a mesma geometria.
 - **Armazenar em 4674 (SIRGAS 2000), medir em 31984 (SIRGAS 2000 / UTM 24S)**: geometria canônica em graus, geometria projetada para cálculos de área e distância.
 - `verification_level`: `automatico` → `conferido_tela` → `conferido_campo`.
 - `source_agreement`: `concordam` / `divergem` / `so_uma_fonte`.
@@ -299,6 +340,12 @@ Suíte em `backend/tests/test_api.py`, em níveis:
 
 Os testes de integração de cobertura assumem os números da carga atual (87.951 registros) e precisam ser atualizados quando os dados mudarem.
 
+No frontend, `frontend/tests/` cobre com o `node:test` a lógica sem navegador: níveis de detalhe, URLs versionadas, expressões e contagens do mapa (`mapTiles`), altura dos prédios (`constants`) e formatação de texto e área (`format`).
+
+```bash
+cd frontend && npm test
+```
+
 ## Requisitos e estado de implementação
 
 A coluna **Estado** é uma avaliação do código atual (MVP) contra a documentação inicial.
@@ -314,21 +361,21 @@ A coluna **Estado** é uma avaliação do código atual (MVP) contra a documenta
 | RF05 | Associar cada endereço à edificação mais próxima, com raio documentado | Implementado | Contém → tolerância de ~15 m → mais próximo |
 | RF06 | Campos de confiança (`confianca_fonte`, `concordancia_fontes`, `nivel_verificacao`, `prioridade_campo`) | Planejado | Exige comparar as fontes de polígono entre si |
 | RF07 | Gerar e priorizar a fila de conferência de campo (`fila_conferencia.csv`) | Planejado | |
-| RF08 | Tabela mestra de estatísticas por recorte territorial | Parcial | `/api/stats` já agrega total, por tipo, por bairro, área total e média; o relatório ainda calcula no navegador. Faltam mediana, densidade, endereços por edificação e % em construção |
-| RF09 | Mapa interativo offline, com simbologia por densidade, faixa de área e endereços clusterizados | Parcial | Mapa interativo com cor por tipo e 3D próprio; usa tiles online e não tem clusterização nem simbologia por densidade ou área |
+| RF08 | Tabela mestra de estatísticas por recorte territorial | Parcial | `/api/stats` agrega total, por tipo, por bairro, área total e média, e o relatório já usa a rota. Faltam mediana, densidade, endereços por edificação e % em construção |
+| RF09 | Mapa interativo offline, com simbologia por densidade, faixa de área e endereços clusterizados | Parcial | Mapa interativo com cor por tipo, 3D e grade de densidade na visão afastada (~175 m e ~88 m); o mapa base vem do OpenFreeMap (online) e não há simbologia por faixa de área nem clusterização dos endereços |
 | RF10 | Usuário externo (não técnico) consulta o mapa e as estatísticas publicados | Parcial | Funciona localmente; ainda não há publicação |
 
 ### Requisitos não funcionais
 
 | ID | Requisito | Categoria | Estado | Observação |
 | --- | --- | --- | --- | --- |
-| RNF01 | Custo total R$ 0,00 | Econômico | Atendido | Apenas dados e ferramentas abertos; tiles públicos do OSM |
+| RNF01 | Custo total R$ 0,00 | Econômico | Atendido | Apenas dados e ferramentas abertos; mapa base do OpenFreeMap, gratuito e sem chave de API |
 | RNF02 | Reprodutibilidade a partir do pacote e das receitas | Manutenibilidade | Parcial | Há scripts, `requirements.txt` e testes, mas os dados brutos são manuais, a origem de parte deles não está documentada e a carga aponta para um banco diferente do script de subida |
 | RNF03 | Cobertura de 100% do perímetro urbano processado | Completude | Parcial | Overture municipal (52.809 prédios) + fallback OSM (400); faltam os ~3,8 mil endereços ainda sem polígono |
 | RNF04 | Taxa de associação endereço–edificação ≥ 85% (piloto: 93%) | Qualidade de dados | Atendido | 93,9% dos endereços caem em polígono (58.178 de 61.965) |
 | RNF05 | Nenhum dado pessoal armazenado ou publicado | Privacidade | A verificar | Guarda-se endereço e estabelecimento; conferir se `estabelecimento` não expõe dados pessoais |
-| RNF06 | Apenas fontes com licença compatível (vedados Google Maps/Street View, DNE dos Correios, Mapillary) | Legal | Atendido | Fontes em uso: OpenStreetMap, Overture e IBGE. O OSM é ODbL (exige atribuição e tem regras para bases derivadas); revisar antes de publicar (RF10) |
-| RNF07 | Toda estatística publicada carrega fonte, método e limitação | Confiabilidade | Parcial | O painel de detalhes mostra a fonte por edificação; o relatório ainda não exibe método e limitação |
+| RNF06 | Apenas fontes com licença compatível (vedados Google Maps/Street View, DNE dos Correios, Mapillary) | Legal | Atendido | Fontes em uso: OpenStreetMap (polígonos de fallback e, via OpenFreeMap, o mapa base), Overture e IBGE. O OSM é ODbL (exige atribuição, exibida no canto do mapa, e tem regras para bases derivadas); revisar antes de publicar (RF10) |
+| RNF07 | Toda estatística publicada carrega fonte, método e limitação | Confiabilidade | Parcial | O cartão do prédio mostra a fonte do footprint; o relatório ainda não exibe método e limitação |
 
 ## Casos de uso
 
@@ -336,8 +383,9 @@ Atores: **Cliente** (consulta mapa e relatórios) e **Equipe Mantenedora** (carg
 
 | Caso de uso | Ator | Estado |
 | --- | --- | --- |
-| Visualizar edificações no mapa | Cliente | Implementado (carga paginada, com progresso) |
-| Filtrar por tipo de uso | Cliente | Implementado (no relatório) |
+| Visualizar edificações no mapa | Cliente | Implementado (tiles vetoriais em níveis de detalhe, 3D) |
+| Buscar endereço, estabelecimento ou bairro | Cliente | Implementado (barra de busca do mapa) |
+| Filtrar por tipo de uso | Cliente | Implementado (no mapa e no relatório) |
 | Filtrar por bairro | Cliente | Implementado (no relatório) |
 | Consultar dados agregados por bairro/setor | Cliente | Parcial (bairro sim; setor não) |
 | Emitir relatório estatístico | Cliente | Implementado (exporta PDF pelo navegador) |
@@ -356,27 +404,32 @@ Atores: **Cliente** (consulta mapa e relatórios) e **Equipe Mantenedora** (carg
 | **2ª fonte opcional** | Ausência do arquivo OSM só desliga o fallback, sem quebrar a carga. | Polígonos do OSM não são checados contra os do Overture |
 | **Carga idempotente (`DROP` + recria)** | Rodar duas vezes dá o mesmo resultado, sem lixo acumulado. | Não é incremental; falha no meio deixa o banco vazio |
 | **API como único acesso ao banco** | Credenciais nunca chegam ao navegador; permite trocar o banco sem tocar na interface. | Uma camada a mais |
-| **GeoJSON como contrato** | Padrão aberto (RFC 7946), consumível por QGIS, Leaflet, deck.gl etc. | Verboso (mitigado com GZip) |
-| **Filtros e paginação no servidor (`bbox`, `limit`/`offset`)** | A API deixa de ser "tudo ou nada"; o índice espacial passa a ser usado. | Paginação por `offset` fica lenta em páginas altas |
-| **Payload leve (`light`) e completo** | O mapa só precisa de cor, filtro e altura; o detalhe vem inteiro. | Dois formatos a manter |
-| **Agregação no banco (`/api/stats`)** | Evita baixar tudo para contar; o total alimenta a barra de progresso. | O relatório ainda não usa a rota |
+| **Tiles vetoriais (MVT) para o mapa, GeoJSON para o resto** | O navegador só recebe os prédios da área visível, já recortados e simplificados para o zoom; detalhe, busca e agregados seguem em JSON/GeoJSON, padrão aberto (RFC 7946) consumível por QGIS, Leaflet etc. | Tiles gerados sob demanda em Python, com cache só em memória |
+| **Níveis de detalhe (grade → pontos → polígonos)** | Abaixo do zoom 14 um prédio pequeno ocupa ~1 px; mandar os footprints repetiria a cidade inteira em cada tile. A grade vem uma vez e mostra onde há prédios e qual uso predomina. | Dois tamanhos de grade e limites de zoom a manter iguais no backend e no frontend |
+| **URLs versionadas (`?v=` de `/api/map/meta`)** | Tiles e grades podem ficar no cache do navegador como imutáveis; uma reimportação muda a URL. | Mudar o formato dos tiles exige incrementar `MAP_FORMAT` |
+| **Pré-aquecimento dos tiles 12 a 14** | São os zooms mais caros de gerar; ao abrir o mapa eles já ficam prontos em segundo plano. | Uma geração completa por versão dos dados, consumindo CPU no início |
+| **Cancelamento da geração de tiles** | Ao mover o mapa, o MapLibre desiste de dezenas de tiles; sem interromper a consulta e o encoder, eles continuavam consumindo RAM e CPU. | Laço de espera checando a desconexão |
+| **Filtros e paginação no servidor (`bbox`, `limit`/`offset`)** | A API deixa de ser "tudo ou nada"; o índice espacial passa a ser usado (também pelos tiles). | Paginação por `offset` fica lenta em páginas altas |
+| **Payload leve (`light`) e completo** | Feature mínima (cor, filtro, altura) para quem desenha a lista inteira; o detalhe vem inteiro. | Dois formatos a manter; o mapa hoje usa os tiles |
+| **Agregação no banco (`/api/stats`)** | Evita baixar tudo para contar; alimenta o relatório. | |
 | **Construtor de consulta separado da execução (`build_where`)** | Permite testar filtros sem banco. | |
 | **Testes em níveis (unitário, contrato, endpoint, integração)** | Cobre os pontos críticos com custo baixo; a integração se desliga sozinha sem banco. | Cobertura parcial |
 | **Compatibilidade retroativa da rota de listagem** | Sem parâmetros, responde como antes. | |
 | **FastAPI** | Leve, tipado, com documentação automática; Django traria ORM e admin sem uso. | |
 | **Consultas parametrizadas** | Protege contra injeção de SQL. | |
-| **deck.gl sobre MapLibre** | WebGL aguenta dezenas de milhares de polígonos com seleção e extrusão; MapLibre é open source e dispensa chave de API. | Duas bibliotecas de mapa para integrar |
-| **3D 100% próprio (deck.gl)** | Todo volume extrusado é uma feature nossa: tem a cor do tipo e, ao clicar, o endereço. Sem camada 3D externa. | Altura padrão de 5 m é ilustrativa (avisada na legenda) |
-| **Carga paginada no frontend (5 mil por página) com progresso** | O mapa pinta aos poucos, sem congelar o navegador. | Ainda baixa a cidade inteira |
-| **Estado local com hooks, dados derivados com `useMemo`** | O estado é pequeno; há uma única fonte de verdade (`data`) e o resto é derivado. | |
-| **Retry e cancelamento no carregamento** | O backend pode estar subindo (5 tentativas para o total, 3 por página); o cancelamento evita atualizar um componente desmontado. | |
+| **Só MapLibre GL no frontend** | Desenha tiles vetoriais, extrusão 3D e seleção em WebGL sem uma segunda biblioteca de mapa; é open source e dispensa chave de API. | Camadas e filtros escritos como expressões do estilo |
+| **Mapa base OpenFreeMap recolorido** | Vetorial, gratuito e sem chave; o estilo escuro é recolorido no cliente e os prédios dele são escondidos, para não competir com os nossos. Os rótulos de ruas e lugares ficam acima dos prédios. | Depende de um serviço externo (ver [Limitações conhecidas](#limitações-conhecidas)) |
+| **3D 100% próprio** | Todo volume extrusado é uma feature nossa: tem a cor do tipo e, ao clicar, o endereço. Sem camada 3D externa. | Sem pavimentos, a altura por tipo é estimada (marcada no cartão) |
+| **Estado local com hooks, sem biblioteca de estado** | O estado é pequeno (seleção, filtros, câmera, versão do mapa); os dados do mapa vivem no próprio MapLibre, e a legenda é contada do que ele desenhou. | |
+| **Cancelamento de pedidos no frontend** | Detalhe, busca, versão do mapa e relatório usam `AbortController`: um pedido antigo nunca sobrescreve um mais novo nem atualiza um componente desmontado. | Sem novas tentativas automáticas; a falha vira um aviso |
+| **Estado compartilhável na URL** | Câmera (`#mapa=`) e prédio (`?predio=`) no endereço: um link abre o mesmo lugar e a mesma seleção. | |
 | **URL da API por variável de ambiente (`VITE_API_URL`)** | Sem endereço fixo no código do frontend. | |
 | **PDF via `window.print()` + CSS `@media print`** | Gera o relatório sem biblioteca extra nem backend de relatórios. | Pouco controle de layout |
 | **MariaDB local isolado por script** | Reprodutibilidade em ambiente restrito, sem exigir serviço instalado. | Depende de Linux/Bash e do `mariadbd` instalado |
 
-**Recursos 3D:** prédios com `num_pavimentos` usam `pavimentos × 3 m` (dado do Overture); o restante usa altura ilustrativa de 5 m; as bolinhas ficam no plano. Incline a câmera (botão direito, arrastar) para ver.
+**Recursos 3D:** por padrão, todos os prédios aparecem em 3D a partir do zoom 14, com a câmera inclinada a 45° (até 60°). O botão de prédios nos controles alterna entre todos em 3D e só o selecionado, e a escolha fica salva no navegador. Prédios com `num_pavimentos` usam `pavimentos × 3 m` (dado do Overture); os demais recebem uma altura típica do uso (`ALTURA_PADRAO_POR_TIPO` em `frontend/src/constants.ts`: residencial 4 m, comercial, serviço e agropecuário 5 m, institucional e hospedagem 7 m, religioso 9 m, não identificado 4 m), e o cartão marca essa altura como estimada. O prédio selecionado ganha uma extrusão própria com contorno claro, mesmo com o 3D geral desligado. Endereços sem prédio ficam no plano. O botão 2D/3D (ou botão direito e arrastar) muda a inclinação.
 
-**Modo "Só o prédio selecionado":** isola o prédio clicado e todos os endereços que compartilham o mesmo polígono (relação 1 telhado × N endereços), comparando a geometria.
+**Modo "Só do prédio selecionado":** com os endereços sem prédio visíveis, esconde os pontos do CNEFE, menos os que compartilham o footprint do prédio selecionado (relação 1 telhado × N endereços, reconhecida pelo `geometry_key`, um hash da geometria). Os prédios da vizinhança continuam no mapa.
 
 ## Limitações conhecidas
 
@@ -405,11 +458,11 @@ Em ordem sugerida de prioridade:
 1. **Segurança e configuração**: variáveis de ambiente únicas para banco e API, e trocar a credencial que está no código.
 2. **Modelo de dados**: migrar para o modelo normalizado (`BUILDING`, `CNEFE_ADDRESS`, `SPATIAL_MATCH`), resolvendo a relação 1 telhado × N endereços; adotar SRID 4674 para armazenar e 31984 para medir.
 3. **Qualidade do ETL**: carga em tabela de *staging* com troca atômica, deduplicação entre Overture e OSM, versões fixadas das dependências e testes do cruzamento espacial.
-4. **Escala do frontend**: carregar por área visível (`bbox`) com o modo `light`, e buscar o detalhe sob demanda; avaliar *vector tiles* e migração para PostGIS.
+4. **Escala do mapa**: os *vector tiles* com níveis de detalhe e o detalhe sob demanda já estão feitos; falta guardar os tiles gerados fora da memória (hoje um reinício do backend refaz o pré-aquecimento) e avaliar a migração para PostGIS (`ST_AsMVT` no banco).
 5. **Confiança e conferência de campo**: comparar as fontes de polígono e calcular `confianca_fonte`, `concordancia_fontes`, `nivel_verificacao` e `prioridade_campo` (RF06); gerar `fila_conferencia.csv` (RF07).
-6. **Estatísticas**: usar `/api/stats` no relatório; acrescentar mediana, densidade e % em construção (RF08), cada uma com fonte, método e limitação (RNF07); baixar as malhas oficiais de setores e bairros (RF02).
+6. **Estatísticas**: acrescentar mediana, densidade e % em construção (RF08), cada uma com fonte, método e limitação (RNF07); baixar as malhas oficiais de setores e bairros (RF02).
 7. **API**: ligar `response_model` aos contratos Pydantic, e paginação por cursor.
-8. **Mapa**: simbologia por densidade e faixa de área, clusterização de endereços e opção offline (RF09).
+8. **Mapa**: simbologia por faixa de área, clusterização de endereços e opção offline, com mapa base próprio (RF09); a grade de densidade da visão afastada já existe.
 9. **Publicação**: disponibilizar mapa e estatísticas para usuários externos (RF10), com Docker Compose para simplificar a instalação e revisão da licença ODbL.
 
 ## Estrutura do repositório
@@ -417,18 +470,26 @@ Em ordem sugerida de prioridade:
 ```
 backend/            API FastAPI (o frontend nunca acessa o MySQL diretamente)
   config.py         conexão/credenciais do banco
-  db.py             filtros (bbox, bairro, tipo, fonte), consultas, agregados → GeoJSON
-  main.py           rotas /, /api/buildings, /api/buildings/{id} e /api/stats
+  db.py             filtros (bbox, bairro, tipo, fonte), consultas (tiles, busca, endereços), agregados → GeoJSON
+  main.py           rotas: /, /api/buildings, /api/buildings/{id}, /api/stats, /api/search,
+                    /api/map/meta, /api/map/overview, /api/tiles; geração e pré-aquecimento dos tiles
+  overview.py       grades de densidade da visão afastada
+  tile_cache.py     cache em memória dos tiles comprimidos
   schemas.py        contratos Pydantic (feature leve/completa, estatísticas)
   tests/
     test_api.py     testes unitários, de contrato, de endpoint e de integração
   requirements.txt  dependências Python do backend
-frontend/           React + Vite + TS + MapLibre + deck.gl
-  src/App.tsx       mapa, camadas, carga paginada, painel, legenda, relatório
+frontend/           React + Vite + TS + MapLibre GL
+  src/App.tsx       mapa, seleção, legenda, URL compartilhável, atalhos e avisos
+  src/mapLayers.ts  mapa base, fontes e camadas do MapLibre, filtros
+  src/mapTiles.ts   níveis de detalhe, URLs versionadas, expressões e contagens
+  src/components/   SearchBox, LayersPanel, BuildingCard, MapControls, Icon
   src/Report.tsx    relatório (totais, filtros, exportar PDF)
-  src/constants.ts  cores e ordem dos tipos de uso
-  src/index.css     estilos (inclui regras de impressão do relatório)
+  src/constants.ts  ordem, rótulos e cores dos tipos de uso; altura dos prédios
+  src/format.ts     caixa de título, números e áreas em pt-BR
+  src/index.css     estilos Liquid Glass, folha inferior no celular e regras de impressão
   src/main.tsx      ponto de entrada React (configura o worker do MapLibre)
+  tests/            testes node:test de mapTiles, constants e format
 scripts/
   db.sh             sobe/para o MariaDB local
   run.sh            sobe tudo (banco, importação, backend, frontend)
