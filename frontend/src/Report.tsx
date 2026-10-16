@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { corDoTipo, rotuloDoTipo, TIPOS_ORDEM, type Theme } from './constants';
 import { formatNumber, titleCase } from './format';
+import { authHeaders } from './session';
 import { Icon } from './components/Icon';
 
 type Stats = { total: number; by_tipo: Record<string, number>; by_bairro: Record<string, number> };
@@ -10,7 +11,7 @@ function normalizarBairro(nome: string): string {
 }
 
 async function fetchStats(apiUrl: string, params: URLSearchParams, signal?: AbortSignal): Promise<Stats> {
-  const response = await fetch(`${apiUrl}/api/stats?${params}`, { signal });
+  const response = await fetch(`${apiUrl}/api/stats?${params}`, { signal, headers: { ...authHeaders() } });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
 }

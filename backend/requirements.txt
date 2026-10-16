@@ -3,3 +3,5 @@ uvicorn[standard]
 pymysql
 shapely
 mapbox-vector-tile
+bcrypt
+PyJWT

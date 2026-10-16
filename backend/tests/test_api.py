@@ -698,3 +698,200 @@ def test_integracao_busca_ignora_acento_e_caixa():
         text = " ".join(filter(None, [item["endereco"], item["estabelecimento"], item["bairro"]])).upper()
         assert "SAO" in text or "SÃO" in text
         assert -39 < item["lng"] < -37 and -10 < item["lat"] < -9
+
+
+# --- Auth superficial: cadastro e login --------------------------------------
+
+@pytest.fixture(autouse=True)
+def _usuario_logado():
+    """Toda rota /api exige Bearer: os testes que não falam de auth
+    ganham um usuário fake para continuar testando só a sua camada."""
+    from backend import main
+
+    main.app.dependency_overrides[main.auth.get_current_user] = lambda: {
+        "id": 1, "nome": "Teste", "email": "t@x.com", "criado_em": None,
+    }
+    yield
+    main.app.dependency_overrides.clear()
+
+
+def test_auth_hash_nunca_expoe_a_senha():
+    from backend import auth
+
+    h = auth.hash_senha("secreta123")
+    assert h != "secreta123"
+    assert auth.confere_senha("secreta123", h)
+    assert not auth.confere_senha("errada", h)
+
+
+def test_auth_schemas_recusam_senha_curta():
+    from pydantic import ValidationError
+
+    from backend.schemas import UserCreate, UserPublic
+
+    with pytest.raises(ValidationError):
+        UserCreate(nome="Ana", email="ana@x.com", senha="123")
+    UserPublic.model_validate({"id": 1, "nome": "Ana", "email": "ana@x.com"})
+
+
+def test_cadastro_201_com_token_e_duplicado_409(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from backend import main
+
+    monkeypatch.setattr(
+        main.auth, "create_user",
+        lambda n, e, s: {"id": 1, "nome": n, "email": e, "criado_em": None},
+    )
+    client = TestClient(main.app)
+    body = {"nome": "Ana", "email": "ana@x.com", "senha": "secreta123"}
+    r = client.post("/api/auth/cadastro", json=body)
+    assert r.status_code == 201
+    assert r.json()["token_type"] == "bearer"
+    assert r.json()["user"]["email"] == "ana@x.com"
+    assert "senha" not in r.text and "senha_hash" not in r.text
+
+    def duplicado(n, e, s):
+        raise main.auth.EmailEmUso(e)
+
+    monkeypatch.setattr(main.auth, "create_user", duplicado)
+    assert client.post("/api/auth/cadastro", json=body).status_code == 409
+
+
+def test_cadastro_recusa_senha_curta_sem_banco():
+    from fastapi.testclient import TestClient
+
+    from backend import main
+
+    r = TestClient(main.app).post(
+        "/api/auth/cadastro",
+        json={"nome": "Ana", "email": "ana@x.com", "senha": "123"},
+    )
+    assert r.status_code == 422
+
+
+def test_login_200_com_token_e_401(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from backend import main
+
+    user = {"id": 1, "nome": "Ana", "email": "ana@x.com", "criado_em": None}
+    monkeypatch.setattr(main.auth, "authenticate", lambda e, s: user)
+    client = TestClient(main.app)
+    r = client.post("/api/auth/login", json={"email": "ana@x.com", "senha": "x"})
+    assert r.status_code == 200
+    assert r.json()["user"]["nome"] == "Ana"
+    assert r.json()["access_token"]
+
+    monkeypatch.setattr(main.auth, "authenticate", lambda e, s: None)
+    assert client.post("/api/auth/login", json={"email": "ana@x.com", "senha": "x"}).status_code == 401
+
+
+def _conexao_falsa(linha):
+    """db.connection() de mentira que devolve sempre a mesma linha."""
+    from contextlib import contextmanager
+
+    class Cur:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def execute(self, *args, **kwargs):
+            pass
+
+        def fetchone(self):
+            return linha
+
+    class Conn:
+        def cursor(self):
+            return Cur()
+
+    @contextmanager
+    def conn():
+        yield Conn()
+
+    return conn
+
+
+def _sem_usuario_fake():
+    """Desliga o usuário fake do autouse: testa a guarda de verdade."""
+    from backend import main
+
+    main.app.dependency_overrides.clear()
+
+
+def test_jwt_guarda_eu_e_as_rotas(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from backend import main
+
+    _sem_usuario_fake()
+    linha = {"id": 7, "nome": "T", "email": "t@x.com", "criado_em": None}
+    monkeypatch.setattr(main.db, "connection", _conexao_falsa(linha))
+    monkeypatch.setattr(main.db, "fetch_data_version", lambda: "100")
+    monkeypatch.setattr(main, "_version_memo", {"checked": 0.0, "version": None})
+    monkeypatch.setattr(main, "_overview_for", lambda v: {"bounds": [0, 0, 1, 1], "cells": []})
+    monkeypatch.setattr(main, "_start_warmup", lambda *a: None)
+    client = TestClient(main.app)
+    token = main.auth.create_token(7)
+    auth = {"Authorization": f"Bearer {token}"}
+
+    assert client.get("/api/auth/eu", headers=auth).json()["email"] == "t@x.com"
+    assert client.get("/api/map/meta", headers=auth).status_code == 200
+    assert client.get("/api/auth/eu").status_code == 401  # sem token
+    assert client.get("/api/map/meta").status_code == 401  # rota guardada
+    assert client.get("/api/auth/eu", headers={"Authorization": "Bearer adulterado"}).status_code == 401
+
+
+def test_jwt_expirado_e_de_outro_usuario(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from backend import main
+
+    _sem_usuario_fake()
+    linha = {"id": 7, "nome": "T", "email": "t@x.com", "criado_em": None}
+    monkeypatch.setattr(main.db, "connection", _conexao_falsa(linha))
+    client = TestClient(main.app)
+
+    monkeypatch.setattr(main.auth, "JWT_EXPIRE_MINUTES", -1)
+    expirado = main.auth.create_token(7)
+    assert client.get(
+        "/api/auth/eu", headers={"Authorization": f"Bearer {expirado}"}
+    ).status_code == 401
+
+    monkeypatch.setattr(main.db, "connection", _conexao_falsa(None))
+    valido = main.auth.create_token(7)
+    assert client.get(
+        "/api/auth/eu", headers={"Authorization": f"Bearer {valido}"}
+    ).status_code == 401  # usuário sumiu do banco
+
+
+@pytest.mark.skipif(not _db_vivo(), reason="MariaDB local fora do ar")
+def test_integracao_cadastro_e_login_reais():
+    import uuid
+
+    from fastapi.testclient import TestClient
+
+    from backend import auth, main
+
+    email = f"teste-{uuid.uuid4().hex[:8]}@x.com"
+    auth.ensure_auth_schema()
+    user = auth.create_user("Teste", email, "secreta123")
+    assert user["email"] == email
+    assert auth.authenticate(email, "secreta123")["id"] == user["id"]
+    assert auth.authenticate(email, "errada") is None
+    with pytest.raises(auth.EmailEmUso):
+        auth.create_user("Outro", email, "secreta123")
+
+    # De ponta a ponta no HTTP, com a guarda de verdade.
+    main.app.dependency_overrides.clear()
+    client = TestClient(main.app)
+    r = client.post("/api/auth/login", json={"email": email, "senha": "secreta123"})
+    assert r.status_code == 200
+    token = r.json()["access_token"]
+    eu = client.get("/api/auth/eu", headers={"Authorization": f"Bearer {token}"})
+    assert eu.status_code == 200
+    assert eu.json()["id"] == user["id"]
+    assert client.get("/api/auth/eu").status_code == 401

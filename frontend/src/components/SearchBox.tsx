@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useId, useState, type KeyboardEvent } from 'react';
 import { corDoTipo, rotuloDoTipo } from '../constants';
 import { titleCase } from '../format';
+import { authHeaders } from '../session';
 import { Icon } from './Icon';
 
 export interface SearchBuilding {
@@ -44,7 +45,10 @@ export const SearchBox = forwardRef<HTMLInputElement, Props>(function SearchBox(
     if (trimmed.length < 2) return;
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
-      fetch(`${apiUrl}/api/search?${new URLSearchParams({ q: trimmed, limit: '8' })}`, { signal: controller.signal })
+      fetch(`${apiUrl}/api/search?${new URLSearchParams({ q: trimmed, limit: '8' })}`, {
+        signal: controller.signal,
+        headers: { ...authHeaders() },
+      })
         .then((response) => {
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
           return response.json();

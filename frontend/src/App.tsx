@@ -20,6 +20,8 @@ import {
 } from './mapLayers';
 import { countFootprints, countOverviewCells, legendSource, OVERVIEW_LEVELS, type MapMeta } from './mapTiles';
 import { BuildingCard, type BuildingProps } from './components/BuildingCard';
+import { AuthBox, AuthScreen, type AuthUser } from './components/AuthBox';
+import { authHeaders, guardarSessao, lerSessao, limparSessao } from './session';
 import { Icon } from './components/Icon';
 import { LayersPanel } from './components/LayersPanel';
 import { MapControls } from './components/MapControls';
@@ -56,7 +58,7 @@ function sameCounts(a: Record<string, number>, b: Record<string, number>) {
 }
 
 async function fetchJson(url: string, signal?: AbortSignal): Promise<any> {
-  const response = await fetch(url, { signal });
+  const response = await fetch(url, { signal, headers: { ...authHeaders() } });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
 }
@@ -167,6 +169,35 @@ export default function App() {
   const [locating, setLocating] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  // Conta com JWT: sem token válido o app nem monta o mapa.
+  const [user, setUser] = useState<AuthUser | null>(() => lerSessao()?.user ?? null);
+  const [sessaoPronta, setSessaoPronta] = useState(false);
+  const [showAuth, setShowAuth] = useState(false);
+
+  // Revalida o token guardado no servidor a cada abertura.
+  useEffect(() => {
+    const sessao = lerSessao();
+    if (!sessao) {
+      setSessaoPronta(true);
+      return;
+    }
+    const controller = new AbortController();
+    fetch(`${API_URL}/api/auth/eu`, {
+      headers: { Authorization: `Bearer ${sessao.token}` },
+      signal: controller.signal,
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.json();
+      })
+      .then((u) => setUser(u))
+      .catch(() => {
+        limparSessao();
+        setUser(null);
+      })
+      .finally(() => setSessaoPronta(true));
+    return () => controller.abort();
+  }, []);
 
   const tipos = useMemo(() => TIPOS_ORDEM.filter((tipo) => !hiddenTipos.has(tipo)), [hiddenTipos]);
 
@@ -210,6 +241,9 @@ export default function App() {
       // Câmera no endereço (#mapa=zoom/lat/lng/rumo/inclinação): links compartilháveis.
       hash: 'mapa',
       attributionControl: { compact: true },
+      // Tiles e grades da nossa API exigem o Bearer do login.
+      transformRequest: (url) =>
+        url.startsWith(API_URL) ? { url, headers: { ...authHeaders() } } : { url },
     });
     mapRef.current = map;
     // Só em desenvolvimento: inspecionar o mapa pelo console do navegador.
@@ -285,6 +319,7 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => {
+    if (!user) return;
     const controller = new AbortController();
     fetchJson(`${API_URL}/api/map/meta`, controller.signal)
       .then((data: MapMeta) => setMeta(data))
@@ -292,7 +327,7 @@ export default function App() {
         if (!controller.signal.aborted) notify(`Servidor de dados fora do ar (${API_URL}).`, 'error');
       });
     return () => controller.abort();
-  }, [notify]);
+  }, [notify, user]);
 
   useEffect(() => {
     const map = readyMap;
@@ -319,7 +354,7 @@ export default function App() {
   // --- Seleção -----------------------------------------------------------
 
   useEffect(() => {
-    if (!selectedId) return;
+    if (!selectedId || !user) return;
     const controller = new AbortController();
     fetchJson(`${API_URL}/api/buildings/${encodeURIComponent(selectedId)}`, controller.signal)
       .then((feature: GeoJsonFeature) => setSelectedDetail({ id: selectedId, feature }))
@@ -329,7 +364,7 @@ export default function App() {
         setSelectedId(null);
       });
     return () => controller.abort();
-  }, [selectedId, notify]);
+  }, [selectedId, notify, user]);
 
   // O prédio selecionado fica no endereço (?predio=), para compartilhar.
   useEffect(() => {
@@ -515,6 +550,28 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, [showReport, selectedId, closeSelection]);
 
+  // Sem JWT válido, nem o mapa monta: a tela de login não tem saída.
+  if (!sessaoPronta) {
+    return (
+      <div className="auth-screen">
+        <div className="auth-card glass">
+          <p className="muted">Verificando sessão…</p>
+        </div>
+      </div>
+    );
+  }
+  if (!user) {
+    return (
+      <AuthScreen
+        apiUrl={API_URL}
+        onAuth={(token, u) => {
+          guardarSessao({ token, user: u });
+          setUser(u);
+        }}
+      />
+    );
+  }
+
   return (
     <div className="app">
       <div ref={mapContainer} className="map" />
@@ -538,6 +595,15 @@ export default function App() {
           <button
             type="button"
             className="icon-button"
+            aria-label={user ? `Conta de ${user.nome}` : 'Entrar ou criar conta'}
+            title={user ? `Entrou como ${user.nome}` : 'Entrar ou criar conta'}
+            onClick={() => setShowAuth((open) => !open)}
+          >
+            <Icon name="user" size={16} />
+          </button>
+          <button
+            type="button"
+            className="icon-button"
             aria-label={theme === 'light' ? 'Mudar para tema escuro' : 'Mudar para tema claro'}
             title={theme === 'light' ? 'Mudar para tema escuro' : 'Mudar para tema claro'}
             onClick={toggleTheme}
@@ -545,6 +611,21 @@ export default function App() {
             <Icon name={theme === 'light' ? 'moon' : 'sun'} size={16} />
           </button>
         </header>
+        {showAuth && (
+          <AuthBox
+            apiUrl={API_URL}
+            user={user}
+            onAuth={(token, u) => {
+              guardarSessao({ token, user: u });
+              setUser(u);
+              setShowAuth(false);
+            }}
+            onLogout={() => {
+              limparSessao();
+              setUser(null);
+            }}
+          />
+        )}
         <SearchBox ref={searchRef} apiUrl={API_URL} onPick={onSearchPick} onFocusChange={(focused) => focused && setSheetOpen(true)} />
         <div className="sidebar-body">
           {selectedId ? (

@@ -1190,3 +1190,77 @@ input:focus-visible {
     print-color-adjust: exact;
   }
 }
+
+/* ---- Conta (login/cadastro superficial) ------------------------------- */
+
+.auth {
+  margin: 12px 4px 0;
+  display: grid;
+  gap: 10px;
+}
+
+.auth .segmented { margin: 0 4px; }
+
+.auth-ola {
+  margin: 0 4px;
+  font-size: 13px;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.auth-logado {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.auth-form {
+  display: grid;
+  gap: 8px;
+}
+
+.auth-form input {
+  height: 40px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--fill-2);
+  font-size: 14px;
+}
+
+.auth-form input::placeholder { color: var(--text-3); }
+
+.auth-enviar { width: 100%; }
+
+.auth-erro {
+  margin: 0 4px;
+  font-size: 12px;
+  color: #ff8f8f;
+}
+
+/* ---- Login bloqueante (sem JWT, sem mapa) ------------------------------- */
+
+.auth-screen {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: var(--app-bg, #0b0f16);
+}
+
+.auth-card {
+  width: min(380px, 100%);
+  padding: 24px 22px;
+  border-radius: 22px;
+  display: grid;
+  gap: 12px;
+}
+
+.auth-card .brand { margin: 0; }
+
+.auth-card .muted { margin: 0 4px; }
+
+.auth-card .auth { margin: 0; }

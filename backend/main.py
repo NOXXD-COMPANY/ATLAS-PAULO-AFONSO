@@ -8,9 +8,10 @@ import math
 import os
 import time
 from concurrent.futures import CancelledError, ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from threading import Event, Lock
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -19,13 +20,26 @@ import numpy as np
 import shapely
 from shapely.geometry import box
 
-from . import db
+from . import auth, db
 from .overview import LEVEL_CELL_DEG, build_overview
+from .schemas import AuthToken, UserCreate, UserLogin, UserPublic
 from .tile_cache import TileCache
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Atlas Urbano", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Garante a tabela `users` na subida; sem banco, só avisa no log
+    (os testes de integração já pulam sozinhos nesse caso)."""
+    try:
+        auth.ensure_auth_schema()
+    except Exception:
+        logger.warning("tabela users não garantida (banco fora do ar?)", exc_info=True)
+    yield
+
+
+app = FastAPI(title="Atlas Urbano", version="0.1.0", lifespan=lifespan)
 tile_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="map-tiles")
 warmup_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tile-warmup")
 # A chave inclui a versão dos dados: uma reimportação gera chaves novas e as
@@ -138,7 +152,7 @@ def _start_warmup(version, cells):
 
 
 @app.get("/api/map/meta")
-def map_meta():
+def map_meta(usuario: dict = Depends(auth.get_current_user)):
     """Versão dos dados (entra nas URLs do mapa) e a área com prédios."""
     version = current_version()
     overview = _overview_for(version)
@@ -151,6 +165,7 @@ def map_overview(
     level: int = Query(default=0, ge=0, lt=len(LEVEL_CELL_DEG),
                        description="0 = grade mais grossa (~350 m)"),
     v: str | None = None,
+    usuario: dict = Depends(auth.get_current_user),
 ):
     """Grade de densidade de um nível de detalhe (GeoJSON)."""
     version = current_version()
@@ -182,6 +197,7 @@ def list_buildings(
     limit: int | None = Query(default=None, ge=1, le=db.MAX_LIMIT),
     offset: int = Query(default=0, ge=0),
     after_id: str | None = Query(default=None),
+    usuario: dict = Depends(auth.get_current_user),
 ):
     """Edificações em GeoJSON, com filtros e paginação opcionais.
 
@@ -211,7 +227,8 @@ def list_buildings(
 
 
 @app.get("/api/tiles/{z}/{x}/{y}.pbf")
-async def building_tile(z: int, x: int, y: int, request: Request, v: str | None = None):
+async def building_tile(z: int, x: int, y: int, request: Request, v: str | None = None,
+                        usuario: dict = Depends(auth.get_current_user)):
     """Tile vetorial binário: só transfere geometrias da área pedida.
 
     `v` é a versão dos dados que o cliente recebeu de /api/map/meta. Com ela
@@ -411,6 +428,7 @@ def get_stats(
     tipo: str | None = None,
     fonte: str | None = None,
     em_cobertura: bool = Query(default=False),
+    usuario: dict = Depends(auth.get_current_user),
 ):
     """Agregados (total, por tipo/bairro, áreas) com os mesmos filtros."""
     try:
@@ -423,7 +441,7 @@ def get_stats(
 
 
 @app.get("/api/buildings/{building_id}")
-def get_building(building_id: str):
+def get_building(building_id: str, usuario: dict = Depends(auth.get_current_user)):
     """Uma edificação específica, ou 404."""
     feature = db.fetch_building(building_id)
     if feature is None:
@@ -439,6 +457,32 @@ def get_building(building_id: str):
 def search(
     q: str = Query(min_length=2, max_length=120, description="Endereço, estabelecimento ou bairro"),
     limit: int = Query(default=8, ge=1, le=20),
+    usuario: dict = Depends(auth.get_current_user),
 ):
     """Busca para a barra do mapa: prédios e bairros com um ponto para centralizar."""
     return db.search(q, limit=limit)
+
+
+@app.post("/api/auth/cadastro", response_model=AuthToken, status_code=201)
+def cadastro(dados: UserCreate):
+    """Cadastra (senha vira hash bcrypt) e já devolve o token de acesso."""
+    try:
+        user = auth.create_user(dados.nome, dados.email, dados.senha)
+    except auth.EmailEmUso:
+        raise HTTPException(status_code=409, detail="e-mail já cadastrado")
+    return {"access_token": auth.create_token(user["id"]), "user": user}
+
+
+@app.post("/api/auth/login", response_model=AuthToken)
+def login(dados: UserLogin):
+    """Confere e-mail + senha e devolve o token Bearer."""
+    user = auth.authenticate(dados.email, dados.senha)
+    if user is None:
+        raise HTTPException(status_code=401, detail="e-mail ou senha inválidos")
+    return {"access_token": auth.create_token(user["id"]), "user": user}
+
+
+@app.get("/api/auth/eu", response_model=UserPublic)
+def eu(usuario: dict = Depends(auth.get_current_user)):
+    """Quem é o dono do token. O front usa para validar a sessão salva."""
+    return usuario
