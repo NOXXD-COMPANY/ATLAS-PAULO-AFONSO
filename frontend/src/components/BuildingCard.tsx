@@ -1,4 +1,4 @@
-import { corDoTipo, FONTE_PONTO, rotuloDoTipo } from '../constants';
+import { corDoTipo, FONTE_PONTO, rotuloDoTipo, type Theme } from '../constants';
 import { formatArea, formatNumber, titleCase } from '../format';
 import { Icon } from './Icon';
 
@@ -28,13 +28,14 @@ interface Props {
   center: [number, number] | null;
   heightM: number;
   heightEstimated: boolean;
+  theme?: Theme;
   onClose: () => void;
   onCenter: () => void;
   onSelectAddress: (id: string) => void;
   onCopy: (text: string, label: string) => void;
 }
 
-export function BuildingCard({ building, previewTipo, center, heightM, heightEstimated, ...actions }: Props) {
+export function BuildingCard({ building, previewTipo, center, heightM, heightEstimated, theme = 'dark', ...actions }: Props) {
   const tipo = building?.tipo ?? previewTipo ?? 'desconhecido';
   const title = titleCase(building?.estabelecimento || building?.endereco) || (building ? 'Edificação sem endereço' : 'Carregando…');
   const subtitle = building?.estabelecimento ? titleCase(building.endereco) : null;
@@ -50,7 +51,7 @@ export function BuildingCard({ building, previewTipo, center, heightM, heightEst
         <button type="button" className="icon-button" aria-label="Voltar" onClick={actions.onClose}>
           <Icon name="back" size={18} />
         </button>
-        <span className="tipo-pill" style={{ ['--tipo' as string]: corDoTipo(tipo) }}>
+        <span className="tipo-pill" style={{ ['--tipo' as string]: corDoTipo(tipo, theme) }}>
           <span className="swatch" />
           {rotuloDoTipo(tipo)}
         </span>
@@ -103,7 +104,7 @@ export function BuildingCard({ building, previewTipo, center, heightM, heightEst
                 {outros.map((item) => (
                   <li key={item.id}>
                     <button type="button" className="result-row" onClick={() => actions.onSelectAddress(item.id)}>
-                      <span className="swatch" style={{ background: corDoTipo(item.tipo) }} />
+                      <span className="swatch" style={{ background: corDoTipo(item.tipo, theme) }} />
                       <span className="result-text">
                         <strong>{titleCase(item.estabelecimento || item.endereco) || 'Sem endereço'}</strong>
                         <span className="muted">{[item.estabelecimento ? titleCase(item.endereco) : null, rotuloDoTipo(item.tipo)].filter(Boolean).join(' · ')}</span>

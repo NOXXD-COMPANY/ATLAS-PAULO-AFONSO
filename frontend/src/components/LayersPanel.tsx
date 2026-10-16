@@ -1,4 +1,4 @@
-import { corDoTipo, rotuloDoTipo, TIPOS_ORDEM } from '../constants';
+import { corDoTipo, rotuloDoTipo, TIPOS_ORDEM, type Theme } from '../constants';
 import { formatNumber } from '../format';
 import { Icon } from './Icon';
 
@@ -7,6 +7,7 @@ interface Props {
   total: number;
   gridLabel: string | null;
   hiddenTipos: ReadonlySet<string>;
+  theme?: Theme;
   onToggleTipo: (tipo: string) => void;
   onOnlyTipo: (tipo: string) => void;
   onShowAllTipos: () => void;
@@ -18,7 +19,7 @@ interface Props {
 }
 
 export function LayersPanel(props: Props) {
-  const { counts, total, gridLabel, hiddenTipos } = props;
+  const { counts, total, gridLabel, hiddenTipos, theme = 'dark' } = props;
   const max = Math.max(1, ...TIPOS_ORDEM.map((tipo) => counts[tipo] ?? 0));
 
   return (
@@ -48,11 +49,11 @@ export function LayersPanel(props: Props) {
                 onClick={() => props.onToggleTipo(tipo)}
                 onDoubleClick={() => props.onOnlyTipo(tipo)}
               >
-                <span className="swatch" style={{ background: corDoTipo(tipo) }} />
+                <span className="swatch" style={{ background: corDoTipo(tipo, theme) }} />
                 <span className="tipo-name">{rotuloDoTipo(tipo)}</span>
                 <span className="tipo-count">{visible ? formatNumber(n) : 'oculto'}</span>
                 <span className="tipo-bar" aria-hidden="true">
-                  <span style={{ width: visible ? `${(n / max) * 100}%` : 0, background: corDoTipo(tipo) }} />
+                  <span style={{ width: visible ? `${(n / max) * 100}%` : 0, background: corDoTipo(tipo, theme) }} />
                 </span>
               </button>
             </li>

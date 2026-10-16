@@ -2,12 +2,12 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import * as maplibregl from 'maplibre-gl';
 import type { Map as MapLibreMap, MapLayerMouseEvent } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { alturaDoPredio, FONTE_PONTO, TIPOS_ORDEM } from './constants';
+import { alturaDoPredio, FONTE_PONTO, TIPOS_ORDEM, type Theme } from './constants';
 import {
   addDataLayers,
   addSelectionLayers,
   applyDataFilters,
-  BASEMAP_URL,
+  basemapUrl,
   CLICKABLE_LAYERS,
   DOT_LAYER,
   EXTRUSION_LAYER,
@@ -84,6 +84,28 @@ function panelPadding(extra = 0) {
 }
 
 const PREF_3D = 'atlas:predios3d';
+const PREF_THEME = 'atlas:theme';
+
+function readTheme(): Theme {
+  const param = new URLSearchParams(window.location.search).get('tema');
+  if (param === 'claro' || param === 'bright' || param === 'light') return 'light';
+  if (param === 'escuro' || param === 'dark') return 'dark';
+  try {
+    const saved = window.localStorage.getItem(PREF_THEME);
+    if (saved === 'dark' || saved === 'light') return saved;
+  } catch {
+    // Modo privado ou armazenamento bloqueado.
+  }
+  return 'light'; // Padrão no tema claro líquido!
+}
+
+function saveTheme(theme: Theme) {
+  try {
+    window.localStorage.setItem(PREF_THEME, theme);
+  } catch {
+    // ignora
+  }
+}
 
 // Preferência só deste navegador; sem armazenamento disponível, vale o padrão.
 function readAll3d() {
@@ -115,6 +137,13 @@ export default function App() {
   // Um link com ?predio= e sem câmera na URL precisa levar o mapa até ele.
   const flyToSelectionRef = useRef(Boolean(selectedFromUrl()) && !window.location.hash.includes('mapa='));
 
+  const [theme, setTheme] = useState<Theme>(readTheme);
+  const themeRef = useRef(theme);
+  useEffect(() => {
+    themeRef.current = theme;
+  }, [theme]);
+  const [styleRevision, setStyleRevision] = useState(0);
+
   const [selectedId, setSelectedId] = useState<string | null>(selectedFromUrl);
   const [selectedDetail, setSelectedDetail] = useState<{ id: string; feature: GeoJsonFeature } | null>(null);
   const [selectedPreview, setSelectedPreview] = useState<{ id: string; feature: GeoJsonFeature } | null>(null);
@@ -141,6 +170,18 @@ export default function App() {
 
   const tipos = useMemo(() => TIPOS_ORDEM.filter((tipo) => !hiddenTipos.has(tipo)), [hiddenTipos]);
 
+  const toggleTheme = useCallback(() => {
+    setTheme((t) => (t === 'light' ? 'dark' : 'light'));
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme;
+    const metaTheme = document.querySelector('meta[name="theme-color"]');
+    if (metaTheme) metaTheme.setAttribute('content', theme === 'light' ? '#eef2f6' : '#0b0f17');
+    saveTheme(theme);
+  }, [theme]);
+
   const notify = useCallback((text: string, tone: Toast['tone'] = 'info') => {
     const id = Date.now() + Math.random();
     setToasts((list) => [...list.filter((t) => t.text !== text), { id, text, tone }]);
@@ -159,7 +200,7 @@ export default function App() {
     if (!mapContainer.current) return;
     const map = new maplibregl.Map({
       container: mapContainer.current,
-      style: BASEMAP_URL,
+      style: basemapUrl(themeRef.current),
       center: CENTRO,
       zoom: ZOOM_INICIAL,
       pitch: PITCH_3D,
@@ -194,9 +235,10 @@ export default function App() {
         : null);
     };
     const onStyleLoad = () => {
-      labelLayerRef.current = styleBasemap(map);
-      addSelectionLayers(map);
+      labelLayerRef.current = styleBasemap(map, themeRef.current);
+      addSelectionLayers(map, themeRef.current);
       setReadyMap(map);
+      setStyleRevision((rev) => rev + 1);
     };
     const onError = (event: maplibregl.ErrorEvent) => {
       // Tiles cancelados ao mover o mapa não são erro para o usuário.
@@ -231,6 +273,17 @@ export default function App() {
     };
   }, [notify, select]);
 
+  // Troca de tema no mapa existente
+  const prevThemeRef = useRef(theme);
+  useEffect(() => {
+    if (prevThemeRef.current === theme) return;
+    prevThemeRef.current = theme;
+    const map = mapRef.current;
+    if (!map) return;
+    setDataMap(null);
+    map.setStyle(basemapUrl(theme));
+  }, [theme]);
+
   useEffect(() => {
     const controller = new AbortController();
     fetchJson(`${API_URL}/api/map/meta`, controller.signal)
@@ -244,7 +297,7 @@ export default function App() {
   useEffect(() => {
     const map = readyMap;
     if (!map || map !== mapRef.current || !meta) return;
-    addDataLayers(map, meta, API_URL, labelLayerRef.current);
+    addDataLayers(map, meta, API_URL, labelLayerRef.current, theme);
     setDataMap(map);
     // Cursor de mão sobre o que dá para clicar.
     const pointer = () => { map.getCanvas().style.cursor = 'pointer'; };
@@ -261,7 +314,7 @@ export default function App() {
       }
       if (mapRef.current === map) removeDataLayers(map);
     };
-  }, [readyMap, meta]);
+  }, [readyMap, meta, styleRevision, theme]);
 
   // --- Seleção -----------------------------------------------------------
 
@@ -307,7 +360,7 @@ export default function App() {
         ? [{ ...selected3dFeature, properties: { ...selected3dFeature.properties, altura_3d_m: height } } as any]
         : [],
     });
-  }, [readyMap, selected3dFeature, height]);
+  }, [readyMap, selected3dFeature, height, styleRevision]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -322,15 +375,15 @@ export default function App() {
   useEffect(() => {
     const map = dataMap;
     if (!map || map !== mapRef.current) return;
-    applyDataFilters(map, { showPontos, soDoSelecionado, selectedGeometryKey, tipos });
-  }, [dataMap, showPontos, soDoSelecionado, selectedGeometryKey, tipos]);
+    applyDataFilters(map, { showPontos, soDoSelecionado, selectedGeometryKey, tipos }, theme);
+  }, [dataMap, showPontos, soDoSelecionado, selectedGeometryKey, tipos, theme, styleRevision]);
 
   useEffect(() => {
     const map = dataMap;
     if (!map || map !== mapRef.current) return;
     setAllBuildings3d(map, all3d);
     saveAll3d(all3d);
-  }, [dataMap, all3d]);
+  }, [dataMap, all3d, styleRevision]);
 
   useEffect(() => {
     const map = dataMap;
@@ -478,10 +531,19 @@ export default function App() {
         </button>
         <header className="brand">
           <span className="brand-mark"><Icon name="building" size={18} /></span>
-          <div>
+          <div style={{ flex: 1, minWidth: 0 }}>
             <h1>Atlas Urbano</h1>
             <p>Paulo Afonso · BA</p>
           </div>
+          <button
+            type="button"
+            className="icon-button"
+            aria-label={theme === 'light' ? 'Mudar para tema escuro' : 'Mudar para tema claro'}
+            title={theme === 'light' ? 'Mudar para tema escuro' : 'Mudar para tema claro'}
+            onClick={toggleTheme}
+          >
+            <Icon name={theme === 'light' ? 'moon' : 'sun'} size={16} />
+          </button>
         </header>
         <SearchBox ref={searchRef} apiUrl={API_URL} onPick={onSearchPick} onFocusChange={(focused) => focused && setSheetOpen(true)} />
         <div className="sidebar-body">
@@ -492,6 +554,7 @@ export default function App() {
               center={selectedCenter}
               heightM={height}
               heightEstimated={heightEstimated}
+              theme={theme}
               onClose={closeSelection}
               onCenter={() => selectedCenter && mapRef.current?.flyTo({ center: selectedCenter, zoom: Math.max(mapRef.current.getZoom(), ZOOM_PREDIO), padding: panelPadding(), essential: true })}
               onSelectAddress={(id) => select(id, selected3dFeature)}
@@ -503,6 +566,7 @@ export default function App() {
               total={total}
               gridLabel={gridLabel}
               hiddenTipos={hiddenTipos}
+              theme={theme}
               onToggleTipo={toggleTipo}
               onOnlyTipo={onlyTipo}
               onShowAllTipos={() => setHiddenTipos(new Set())}
@@ -520,6 +584,7 @@ export default function App() {
         bearing={bearing}
         is3d={is3d}
         all3d={all3d}
+        theme={theme}
         onToggleAll3d={() => {
           setAll3d((all) => !all);
           // Ver prédios em 3D de cima não mostra nada; inclina a câmera.
@@ -533,6 +598,7 @@ export default function App() {
         onRecenter={recenter}
         onLocate={locate}
         onReport={() => setShowReport(true)}
+        onToggleTheme={toggleTheme}
       />
 
       <div className={`loading-pill glass${loading ? ' show' : ''}`} role="status" aria-live="polite">
@@ -550,7 +616,7 @@ export default function App() {
 
       {showReport && (
         <Suspense fallback={<div className="report-backdrop"><div className="report glass"><p className="muted pad">Carregando relatório…</p></div></div>}>
-          <Report apiUrl={API_URL} onClose={() => setShowReport(false)} />
+          <Report apiUrl={API_URL} theme={theme} onClose={() => setShowReport(false)} />
         </Suspense>
       )}
     </div>

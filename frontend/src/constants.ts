@@ -22,9 +22,11 @@ export const TIPO_LABEL: Record<string, string> = {
   desconhecido: 'Não identificado',
 };
 
+export type Theme = 'dark' | 'light';
+
 // Cores de sistema do modo escuro da Apple: saturadas o bastante para ler
 // sobre o mapa escuro e distintas entre si.
-export const TIPO_CORES: Record<string, string> = {
+export const TIPO_CORES_DARK: Record<string, string> = {
   residencial: '#0A84FF',
   comercial: '#FF453A',
   servico: '#FF9F0A',
@@ -35,8 +37,28 @@ export const TIPO_CORES: Record<string, string> = {
   desconhecido: '#8E8E93',
 };
 
-export function corDoTipo(tipo: unknown): string {
-  return (typeof tipo === 'string' && TIPO_CORES[tipo]) || TIPO_CORES.desconhecido;
+// Cores de sistema do modo claro da Apple: tons equilibrados e contrastantes
+// para fundos claros e interface em vidro leitoso/cristalino.
+export const TIPO_CORES_LIGHT: Record<string, string> = {
+  residencial: '#007AFF',
+  comercial: '#FF3B30',
+  servico: '#FF9500',
+  religioso: '#AF52DE',
+  institucional: '#0098C8',
+  hospedagem: '#34C759',
+  agropecuario: '#D99B00',
+  desconhecido: '#6C757D',
+};
+
+export const TIPO_CORES: Record<string, string> = TIPO_CORES_DARK;
+
+export function coresPorTema(theme: Theme = 'dark'): Record<string, string> {
+  return theme === 'light' ? TIPO_CORES_LIGHT : TIPO_CORES_DARK;
+}
+
+export function corDoTipo(tipo: unknown, theme: Theme = 'dark'): string {
+  const cores = coresPorTema(theme);
+  return (typeof tipo === 'string' && cores[tipo]) || cores.desconhecido;
 }
 
 export function rotuloDoTipo(tipo: unknown): string {

@@ -1,5 +1,12 @@
 import type { ExpressionSpecification, Map as MapLibreMap } from 'maplibre-gl';
-import { ALTURA_PADRAO_POR_TIPO, ALTURA_PAVIMENTO_M, FONTE_PONTO, TIPO_CORES, TIPOS_ORDEM } from './constants';
+import {
+  ALTURA_PADRAO_POR_TIPO,
+  ALTURA_PAVIMENTO_M,
+  coresPorTema,
+  FONTE_PONTO,
+  TIPOS_ORDEM,
+  type Theme,
+} from './constants';
 import {
   buildingTileUrl,
   DOT_MIN_ZOOM,
@@ -15,9 +22,15 @@ import {
   type MapMeta,
 } from './mapTiles';
 
-// Mapa base vetorial, gratuito e sem chave (openfreemap.org). Os rótulos
-// ficam por cima dos nossos prédios; o resto é recolorido em styleBasemap.
-export const BASEMAP_URL = 'https://tiles.openfreemap.org/styles/dark';
+// Mapa base vetorial, gratuito e sem chave (openfreemap.org).
+// Positron para o tema claro e Dark Matter para o escuro.
+export const BASEMAP_URL_DARK = 'https://tiles.openfreemap.org/styles/dark';
+export const BASEMAP_URL_BRIGHT = 'https://tiles.openfreemap.org/styles/positron';
+export const BASEMAP_URL = BASEMAP_URL_DARK;
+
+export function basemapUrl(theme: Theme = 'dark'): string {
+  return theme === 'light' ? BASEMAP_URL_BRIGHT : BASEMAP_URL_DARK;
+}
 
 export const SELECTED_LAYER = 'selected-building-3d';
 export const SELECTED_OUTLINE = 'selected-outline';
@@ -29,11 +42,10 @@ export const overviewId = (level: number) => `overview-${level}`;
 export const OVERVIEW_LAYERS = OVERVIEW_LEVELS.map(({ level }) => overviewId(level));
 export const CLICKABLE_LAYERS = [SELECTED_LAYER, EXTRUSION_LAYER, FILL_LAYER, DOT_LAYER];
 
-export function colorByTipo(tipo: unknown): ExpressionSpecification {
-  return ['match', tipo, ...TIPOS_ORDEM.flatMap((t) => [t, TIPO_CORES[t]]), TIPO_CORES.desconhecido] as any;
+export function colorByTipo(tipo: unknown, theme: Theme = 'dark'): ExpressionSpecification {
+  const cores = coresPorTema(theme);
+  return ['match', tipo, ...TIPOS_ORDEM.flatMap((t) => [t, cores[t]]), cores.desconhecido] as any;
 }
-
-const tipoColor = colorByTipo(['get', 'tipo']);
 
 /** Mesma regra de alturaDoPredio (constants.ts), como expressão do mapa. */
 const heightExpression: any = ['case',
@@ -42,9 +54,9 @@ const heightExpression: any = ['case',
   ['match', ['get', 'tipo'], ...TIPOS_ORDEM.flatMap((t) => [t, ALTURA_PADRAO_POR_TIPO[t]]), ALTURA_PADRAO_POR_TIPO.desconhecido],
 ];
 
-// Paleta do mapa base: azul-grafite profundo em vez do preto puro do estilo
+// Paleta do mapa base escuro: azul-grafite profundo em vez do preto puro do estilo
 // original, com a água bem separada da terra.
-const BASEMAP = {
+const BASEMAP_DARK = {
   background: '#0b0f17',
   land: '#0f141e',
   green: '#0e1a18',
@@ -57,6 +69,21 @@ const BASEMAP = {
   labelHalo: 'rgba(11, 15, 23, 0.92)',
 };
 
+// Paleta do mapa base claro: cinza-azulado suave, limpo e cristalino,
+// com vegetação suave e água celeste delicada sob o vidro líquido.
+const BASEMAP_LIGHT = {
+  background: '#eef2f6',
+  land: '#f5f7fa',
+  green: '#d9ebd8',
+  water: '#bde0f7',
+  waterway: '#9ccaf0',
+  roadMinor: '#ffffff',
+  roadMajor: '#e3e8f0',
+  roadMotorway: '#cbd5e1',
+  label: '#334155',
+  labelHalo: 'rgba(255, 255, 255, 0.95)',
+};
+
 function paint(map: MapLibreMap, layer: string, property: string, value: unknown) {
   try {
     map.setPaintProperty(layer, property as any, value);
@@ -66,31 +93,32 @@ function paint(map: MapLibreMap, layer: string, property: string, value: unknown
 }
 
 /**
- * Recolore o estilo escuro do OpenFreeMap e esconde os prédios dele (os
+ * Recolore o estilo do OpenFreeMap e esconde os prédios dele (os
  * nossos vêm do backend). Devolve a primeira camada de rótulos, abaixo da
  * qual entram os dados.
  */
-export function styleBasemap(map: MapLibreMap): string | undefined {
+export function styleBasemap(map: MapLibreMap, theme: Theme = 'dark'): string | undefined {
+  const palette = theme === 'light' ? BASEMAP_LIGHT : BASEMAP_DARK;
   const layers = map.getStyle().layers ?? [];
   let firstLabel: string | undefined;
   for (const layer of layers) {
     const id = layer.id;
     const sourceLayer = 'source-layer' in layer ? layer['source-layer'] : undefined;
-    if (layer.type === 'background') paint(map, id, 'background-color', BASEMAP.background);
+    if (layer.type === 'background') paint(map, id, 'background-color', palette.background);
     else if (layer.type === 'fill') {
       if (sourceLayer === 'building') map.setLayoutProperty(id, 'visibility', 'none');
-      else if (sourceLayer === 'water') paint(map, id, 'fill-color', BASEMAP.water);
-      else if (/park|wood|grass/.test(id)) paint(map, id, 'fill-color', BASEMAP.green);
-      else if (sourceLayer === 'landuse' || sourceLayer === 'landcover') paint(map, id, 'fill-color', BASEMAP.land);
+      else if (sourceLayer === 'water') paint(map, id, 'fill-color', palette.water);
+      else if (/park|wood|grass/.test(id)) paint(map, id, 'fill-color', palette.green);
+      else if (sourceLayer === 'landuse' || sourceLayer === 'landcover') paint(map, id, 'fill-color', palette.land);
     } else if (layer.type === 'line') {
-      if (sourceLayer === 'waterway') paint(map, id, 'line-color', BASEMAP.waterway);
-      else if (/motorway/.test(id) && !/casing/.test(id)) paint(map, id, 'line-color', BASEMAP.roadMotorway);
-      else if (/major/.test(id) && !/casing/.test(id)) paint(map, id, 'line-color', BASEMAP.roadMajor);
-      else if (/minor|path/.test(id)) paint(map, id, 'line-color', BASEMAP.roadMinor);
-      else if (/casing/.test(id)) paint(map, id, 'line-color', BASEMAP.background);
+      if (sourceLayer === 'waterway') paint(map, id, 'line-color', palette.waterway);
+      else if (/motorway/.test(id) && !/casing/.test(id)) paint(map, id, 'line-color', palette.roadMotorway);
+      else if (/major/.test(id) && !/casing/.test(id)) paint(map, id, 'line-color', palette.roadMajor);
+      else if (/minor|path/.test(id)) paint(map, id, 'line-color', palette.roadMinor);
+      else if (/casing/.test(id)) paint(map, id, 'line-color', palette.background);
     } else if (layer.type === 'symbol') {
-      paint(map, id, 'text-color', BASEMAP.label);
-      paint(map, id, 'text-halo-color', BASEMAP.labelHalo);
+      paint(map, id, 'text-color', palette.label);
+      paint(map, id, 'text-halo-color', palette.labelHalo);
       // Rótulos de vias e lugares ficam acima dos prédios; os da água, não.
       if (!firstLabel && sourceLayer !== 'water_name') firstLabel = id;
     }
@@ -98,13 +126,13 @@ export function styleBasemap(map: MapLibreMap): string | undefined {
   return firstLabel;
 }
 
-/** Prédio selecionado: extrudado em 3D e com um contorno claro. Fica no topo. */
-export function addSelectionLayers(map: MapLibreMap) {
+/** Prédio selecionado: extrudado em 3D e com contorno de destaque. Fica no topo. */
+export function addSelectionLayers(map: MapLibreMap, theme: Theme = 'dark') {
   map.addSource('selected', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
   map.addLayer({
     id: SELECTED_LAYER, type: 'fill-extrusion', source: 'selected',
     paint: {
-      'fill-extrusion-color': tipoColor,
+      'fill-extrusion-color': colorByTipo(['get', 'tipo'], theme),
       'fill-extrusion-height': ['number', ['get', 'altura_3d_m'], ALTURA_PADRAO_POR_TIPO.desconhecido],
       'fill-extrusion-base': 0,
       'fill-extrusion-opacity': 0.95,
@@ -113,12 +141,19 @@ export function addSelectionLayers(map: MapLibreMap) {
   });
   map.addLayer({
     id: SELECTED_OUTLINE, type: 'line', source: 'selected',
-    paint: { 'line-color': '#ffffff', 'line-width': 2, 'line-opacity': 0.9, 'line-blur': 0.5 },
+    paint: {
+      'line-color': theme === 'light' ? '#0f172a' : '#ffffff',
+      'line-width': 2,
+      'line-opacity': 0.9,
+      'line-blur': 0.5,
+    },
   });
 }
 
 /** Grades da mais grossa à mais fina, depois pontos e polígonos (ver mapTiles.ts). */
-export function addDataLayers(map: MapLibreMap, meta: MapMeta, apiUrl: string, beforeId?: string) {
+export function addDataLayers(map: MapLibreMap, meta: MapMeta, apiUrl: string, beforeId?: string, theme: Theme = 'dark') {
+  const tipoColor = colorByTipo(['get', 'tipo'], theme);
+
   for (const { level, enter, exit } of OVERVIEW_LEVELS) {
     map.addSource(overviewId(level), { type: 'geojson', data: overviewUrl(apiUrl, meta.version, level) });
     // As mais finas ficam por cima e cobrem a anterior enquanto ela sai.
@@ -161,7 +196,8 @@ export function addDataLayers(map: MapLibreMap, meta: MapMeta, apiUrl: string, b
     id: OUTLINE_LAYER, type: 'line', source: 'buildings', 'source-layer': 'buildings',
     paint: {
       // Sobre o fundo escuro, um traço escuro separa prédios colados.
-      'line-color': 'rgba(5, 8, 14, 0.7)',
+      // Sobre o fundo claro, um traço suave escuro sem poluir.
+      'line-color': theme === 'light' ? 'rgba(15, 23, 42, 0.22)' : 'rgba(5, 8, 14, 0.7)',
       'line-width': 0.6,
       'line-opacity': ['interpolate', ['linear'], ['zoom'], FOOTPRINT_MIN_ZOOM + 0.5, 0, FOOTPRINT_MIN_ZOOM + 1.5, 1],
     },
@@ -208,7 +244,7 @@ export function setAllBuildings3d(map: MapLibreMap, all: boolean) {
   map.setLayoutProperty(OUTLINE_LAYER, 'visibility', all ? 'none' : 'visible');
 }
 
-export function applyDataFilters(map: MapLibreMap, { showPontos, soDoSelecionado, selectedGeometryKey, tipos }: DataFilters) {
+export function applyDataFilters(map: MapLibreMap, { showPontos, soDoSelecionado, selectedGeometryKey, tipos }: DataFilters, theme: Theme = 'dark') {
   const clauses: any[] = [];
   if (tipos.length < TIPOS_ORDEM.length) clauses.push(['in', ['get', 'tipo'], ['literal', tipos]]);
   if (!showPontos) clauses.push(['!=', ['get', 'fonte'], FONTE_PONTO]);
@@ -231,7 +267,7 @@ export function applyDataFilters(map: MapLibreMap, { showPontos, soDoSelecionado
   const density: any = ['interpolate', ['linear'], count, 1, 0.28, 15, 0.5, 60, 0.75];
   for (const { level, enter, exit } of OVERVIEW_LEVELS) {
     map.setFilter(overviewId(level), ['>', count, 0]);
-    map.setPaintProperty(overviewId(level), 'fill-color', overviewColorExpression(showPontos, tipos, TIPO_CORES));
+    map.setPaintProperty(overviewId(level), 'fill-color', overviewColorExpression(showPontos, tipos, coresPorTema(theme)));
     map.setPaintProperty(overviewId(level), 'fill-opacity', fadeRamp(enter, exit, density));
   }
 }

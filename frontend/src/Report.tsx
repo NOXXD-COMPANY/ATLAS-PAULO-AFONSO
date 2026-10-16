@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { corDoTipo, rotuloDoTipo, TIPOS_ORDEM } from './constants';
+import { corDoTipo, rotuloDoTipo, TIPOS_ORDEM, type Theme } from './constants';
 import { formatNumber, titleCase } from './format';
 import { Icon } from './components/Icon';
 
@@ -32,7 +32,7 @@ function BarList({ rows, color }: { rows: { key: string; label: string; n: numbe
   );
 }
 
-export default function Report({ apiUrl, onClose }: { apiUrl: string; onClose: () => void }) {
+export default function Report({ apiUrl, theme = 'dark', onClose }: { apiUrl: string; theme?: Theme; onClose: () => void }) {
   const [filtroTipo, setFiltroTipo] = useState('todos');
   const [filtroBairros, setFiltroBairros] = useState<string[]>([]);
   const [buscaBairro, setBuscaBairro] = useState('');
@@ -96,7 +96,7 @@ export default function Report({ apiUrl, onClose }: { apiUrl: string; onClose: (
 
   const visibleStats = isDefault ? base : stats?.key === statsKey ? stats.value : null;
   const porTipo = TIPOS_ORDEM
-    .map((tipo) => ({ key: tipo, label: rotuloDoTipo(tipo), n: visibleStats?.by_tipo?.[tipo] ?? 0, color: corDoTipo(tipo) }))
+    .map((tipo) => ({ key: tipo, label: rotuloDoTipo(tipo), n: visibleStats?.by_tipo?.[tipo] ?? 0, color: corDoTipo(tipo, theme) }))
     .filter((row) => row.n > 0);
   const porBairro = [...Object.entries(visibleStats?.by_bairro ?? {})
     .reduce((acc, [raw, n]) => acc.set(normalizarBairro(raw), (acc.get(normalizarBairro(raw)) ?? 0) + n), new Map<string, number>())]
@@ -137,7 +137,7 @@ export default function Report({ apiUrl, onClose }: { apiUrl: string; onClose: (
                   key={tipo}
                   type="button"
                   className={`chip${filtroTipo === tipo ? ' on' : ''}`}
-                  style={{ ['--tipo' as string]: corDoTipo(tipo) }}
+                  style={{ ['--tipo' as string]: corDoTipo(tipo, theme) }}
                   onClick={() => setFiltroTipo(tipo)}
                 >
                   <span className="swatch" />{rotuloDoTipo(tipo)}

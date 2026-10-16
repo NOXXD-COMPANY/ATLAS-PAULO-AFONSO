@@ -1,12 +1,14 @@
-/* Atlas Urbano — interface em "vidro líquido" sobre o mapa escuro.
+/* Atlas Urbano — interface em "vidro líquido" sobre o mapa.
    Os painéis desfocam e saturam o mapa por trás, com uma borda de brilho
-   especular e controles em cápsula, à maneira do Liquid Glass da Apple. */
+   especular e controles em cápsula, à maneira do Liquid Glass da Apple.
+   Suporta modo escuro e modo claro com refração e iluminação dedicadas. */
 
 :root {
   color-scheme: dark;
   --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI Variable Text', 'Segoe UI', Inter, system-ui, sans-serif;
   --mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Consolas, monospace;
 
+  --bg: #0b0f17;
   --text: rgba(255, 255, 255, 0.95);
   --text-2: rgba(235, 240, 255, 0.64);
   --text-3: rgba(235, 240, 255, 0.42);
@@ -17,6 +19,8 @@
   --glass-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.11), rgba(255, 255, 255, 0.025) 40%, rgba(255, 255, 255, 0.02));
   --glass-rim: linear-gradient(140deg, rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0.08) 30%, rgba(255, 255, 255, 0) 55%, rgba(255, 255, 255, 0.22));
   --glass-blur: blur(30px) saturate(190%) brightness(1.04);
+  --glass-inner: inset 0 1px 0 rgba(255, 255, 255, 0.22), inset 0 -1px 0 rgba(255, 255, 255, 0.04);
+  --glass-fallback: #1a1f2b;
   --shadow: 0 18px 50px rgba(0, 0, 0, 0.5), 0 2px 10px rgba(0, 0, 0, 0.3);
 
   --fill-1: rgba(255, 255, 255, 0.055);
@@ -24,9 +28,99 @@
   --fill-3: rgba(255, 255, 255, 0.16);
   --sep: rgba(255, 255, 255, 0.08);
 
+  --scrollbar-thumb: rgba(255, 255, 255, 0.18);
+  --search-field-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06), inset 0 1px 2px rgba(0, 0, 0, 0.25);
+  --search-field-focus-bg: var(--fill-3);
+  --search-field-focus-shadow: inset 0 0 0 1px rgba(10, 132, 255, 0.7), 0 0 0 4px rgba(10, 132, 255, 0.18);
+  --segmented-bg: rgba(118, 118, 128, 0.24);
+  --segmented-active-bg: rgba(255, 255, 255, 0.2);
+  --segmented-active-shadow: 0 3px 10px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  --switch-bg: rgba(120, 120, 128, 0.36);
+  --switch-thumb-bg: linear-gradient(180deg, #fff, #eef1f6);
+  --switch-thumb-shadow: 0 3px 8px rgba(0, 0, 0, 0.25), inset 0 -1px 1px rgba(0, 0, 0, 0.06);
+  --glass-button-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.17), rgba(255, 255, 255, 0.06));
+  --glass-button-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3), inset 0 0 0 1px rgba(255, 255, 255, 0.08), 0 4px 14px rgba(0, 0, 0, 0.25);
+  --glass-button-hover-filter: brightness(1.2);
+  --control-active-color: #64b5ff;
+  --compass-rotated-color: #ff8a80;
+  --spinner-track: rgba(255, 255, 255, 0.22);
+  --spinner-head: rgba(255, 255, 255, 0.9);
+  --toast-error-color: #ffd2cf;
+  --toast-error-bg: var(--glass-sheen), rgba(120, 28, 30, 0.5);
+  --toast-error-shadow: var(--shadow);
+  --user-dot-border: #fff;
+  --user-dot-shadow: 0 0 0 7px rgba(10, 132, 255, 0.25), 0 2px 8px rgba(0, 0, 0, 0.5);
+  --report-backdrop-bg: rgba(4, 7, 12, 0.45);
+  --report-glass-tint: rgba(24, 28, 39, 0.66);
+  --sheet-handle-bg: rgba(255, 255, 255, 0.35);
+  --chip-active-bg: rgba(255, 255, 255, 0.18);
+  --chip-active-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  --swatch-rim: rgba(255, 255, 255, 0.18);
+  --map-attrib-bg: rgba(18, 22, 32, 0.6);
+  --map-attrib-btn-bg: rgba(255, 255, 255, 0.12);
+  --map-attrib-btn-filter: invert(1);
+  --map-scale-border: rgba(255, 255, 255, 0.45);
+
   --r-panel: 28px;
   --r-card: 18px;
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --bg: #eef2f6;
+  --text: rgba(15, 23, 42, 0.95);
+  --text-2: rgba(30, 41, 59, 0.68);
+  --text-3: rgba(71, 85, 105, 0.52);
+  --accent: #007aff;
+  --danger: #ff3b30;
+
+  --glass-tint: rgba(255, 255, 255, 0.72);
+  --glass-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(255, 255, 255, 0.35) 45%, rgba(255, 255, 255, 0.12));
+  --glass-rim: linear-gradient(140deg, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0.5) 30%, rgba(0, 0, 0, 0.05) 55%, rgba(255, 255, 255, 0.65));
+  --glass-blur: blur(30px) saturate(200%) brightness(1.02);
+  --glass-inner: inset 0 1px 0 rgba(255, 255, 255, 0.95), inset 0 -1px 0 rgba(0, 0, 0, 0.05);
+  --glass-fallback: rgba(255, 255, 255, 0.96);
+  --shadow: 0 18px 45px rgba(15, 23, 42, 0.12), 0 2px 10px rgba(15, 23, 42, 0.06);
+
+  --fill-1: rgba(0, 0, 0, 0.038);
+  --fill-2: rgba(0, 0, 0, 0.065);
+  --fill-3: rgba(0, 0, 0, 0.11);
+  --sep: rgba(0, 0, 0, 0.08);
+
+  --scrollbar-thumb: rgba(0, 0, 0, 0.22);
+  --search-field-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.05), inset 0 1px 2px rgba(0, 0, 0, 0.05);
+  --search-field-focus-bg: rgba(255, 255, 255, 0.9);
+  --search-field-focus-shadow: inset 0 0 0 1.5px var(--accent), 0 0 0 4px rgba(0, 122, 255, 0.16);
+  --segmented-bg: rgba(118, 118, 128, 0.14);
+  --segmented-active-bg: #ffffff;
+  --segmented-active-shadow: 0 2px 8px rgba(0, 0, 0, 0.12), 0 0.5px 2px rgba(0, 0, 0, 0.06), inset 0 1px 0 #ffffff;
+  --switch-bg: rgba(120, 120, 128, 0.24);
+  --switch-thumb-bg: #ffffff;
+  --switch-thumb-shadow: 0 3px 8px rgba(0, 0, 0, 0.18), 0 1px 2px rgba(0, 0, 0, 0.08);
+  --glass-button-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(240, 244, 250, 0.8));
+  --glass-button-shadow: inset 0 1px 0 #ffffff, inset 0 0 0 1px rgba(0, 0, 0, 0.07), 0 3px 10px rgba(15, 23, 42, 0.08);
+  --glass-button-hover-filter: brightness(0.97) contrast(1.02);
+  --control-active-color: #007aff;
+  --compass-rotated-color: #ff3b30;
+  --spinner-track: rgba(0, 0, 0, 0.12);
+  --spinner-head: var(--accent);
+  --toast-error-color: #b91c1c;
+  --toast-error-bg: linear-gradient(180deg, rgba(254, 242, 242, 0.95), rgba(254, 226, 226, 0.9));
+  --toast-error-shadow: 0 10px 30px rgba(220, 38, 38, 0.15), 0 2px 8px rgba(0, 0, 0, 0.05);
+  --user-dot-border: #ffffff;
+  --user-dot-shadow: 0 0 0 7px rgba(0, 122, 255, 0.25), 0 2px 8px rgba(15, 23, 42, 0.25);
+  --report-backdrop-bg: rgba(15, 23, 42, 0.25);
+  --report-glass-tint: rgba(255, 255, 255, 0.88);
+  --sheet-handle-bg: rgba(0, 0, 0, 0.2);
+  --chip-active-bg: #ffffff;
+  --chip-active-shadow: inset 0 1px 0 #ffffff, 0 2px 8px rgba(0, 0, 0, 0.08), inset 0 0 0 1px rgba(0, 0, 0, 0.08);
+  --swatch-rim: rgba(0, 0, 0, 0.12);
+  --map-attrib-bg: rgba(255, 255, 255, 0.75);
+  --map-attrib-btn-bg: rgba(0, 0, 0, 0.06);
+  --map-attrib-btn-filter: none;
+  --map-scale-border: rgba(0, 0, 0, 0.35);
 }
 
 * { box-sizing: border-box; }
@@ -36,7 +130,7 @@ body,
 #root {
   margin: 0;
   height: 100%;
-  background: #0b0f17;
+  background: var(--bg);
 }
 
 body {
@@ -79,10 +173,7 @@ input:focus-visible {
   background: var(--glass-sheen), var(--glass-tint);
   -webkit-backdrop-filter: var(--glass-blur);
   backdrop-filter: var(--glass-blur);
-  box-shadow:
-    var(--shadow),
-    inset 0 1px 0 rgba(255, 255, 255, 0.22),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.04);
+  box-shadow: var(--shadow), var(--glass-inner);
 }
 
 /* Borda especular: um gradiente só no contorno, mais forte no canto de cima. */
@@ -101,7 +192,7 @@ input:focus-visible {
 
 @media (prefers-reduced-transparency: reduce) {
   .glass {
-    background: #1a1f2b;
+    background: var(--glass-fallback);
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }
@@ -162,7 +253,7 @@ input:focus-visible {
   overscroll-behavior: contain;
   padding: 2px 14px 16px;
   scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 
 /* Enquanto há resultados de busca, eles ocupam o lugar do conteúdo. */
@@ -187,13 +278,13 @@ input:focus-visible {
   padding: 0 8px 0 13px;
   border-radius: 999px;
   background: var(--fill-2);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06), inset 0 1px 2px rgba(0, 0, 0, 0.25);
+  box-shadow: var(--search-field-shadow);
   transition: box-shadow 0.2s var(--ease), background 0.2s var(--ease);
 }
 
 .search-field:focus-within {
-  background: var(--fill-3);
-  box-shadow: inset 0 0 0 1px rgba(10, 132, 255, 0.7), 0 0 0 4px rgba(10, 132, 255, 0.18);
+  background: var(--search-field-focus-bg);
+  box-shadow: var(--search-field-focus-shadow);
 }
 
 .search-field input {
@@ -226,6 +317,7 @@ input:focus-visible {
   margin-top: 6px;
   overflow-y: auto;
   scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 
 .section-label {
@@ -343,7 +435,7 @@ input:focus-visible {
   width: 12px;
   height: 12px;
   border-radius: 4px;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+  box-shadow: inset 0 0 0 1px var(--swatch-rim);
 }
 
 .tipo-row.off .swatch {
@@ -405,7 +497,7 @@ input:focus-visible {
   height: 31px;
   margin: 0;
   border-radius: 999px;
-  background: rgba(120, 120, 128, 0.36);
+  background: var(--switch-bg);
   cursor: pointer;
   transition: background 0.25s var(--ease);
 }
@@ -418,8 +510,8 @@ input:focus-visible {
   width: 27px;
   height: 27px;
   border-radius: 50%;
-  background: linear-gradient(180deg, #fff, #eef1f6);
-  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.25), inset 0 -1px 1px rgba(0, 0, 0, 0.06);
+  background: var(--switch-thumb-bg);
+  box-shadow: var(--switch-thumb-shadow);
   transition: transform 0.28s var(--ease);
 }
 
@@ -432,7 +524,7 @@ input:focus-visible {
   grid-auto-columns: 1fr;
   padding: 2px;
   border-radius: 999px;
-  background: rgba(118, 118, 128, 0.24);
+  background: var(--segmented-bg);
 }
 
 .segmented button {
@@ -440,14 +532,16 @@ input:focus-visible {
   border: 0;
   border-radius: 999px;
   background: transparent;
+  color: var(--text-2);
   font-size: 13px;
   cursor: pointer;
-  transition: background 0.2s var(--ease), box-shadow 0.2s;
+  transition: background 0.2s var(--ease), box-shadow 0.2s, color 0.2s;
 }
 
 .segmented button[aria-checked='true'] {
-  background: rgba(255, 255, 255, 0.2);
-  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  background: var(--segmented-active-bg);
+  box-shadow: var(--segmented-active-shadow);
+  color: var(--text);
 }
 
 .hint {
@@ -488,6 +582,7 @@ input:focus-visible {
   border: 0;
   border-radius: 50%;
   background: var(--fill-2);
+  color: var(--text);
   cursor: pointer;
   transition: background 0.15s, transform 0.15s;
 }
@@ -509,12 +604,21 @@ input:focus-visible {
   font-weight: 600;
 }
 
+:root[data-theme='light'] .tipo-pill {
+  background: color-mix(in srgb, var(--tipo) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tipo) 28%, transparent);
+}
+
 .tipo-pill .swatch {
   width: 8px;
   height: 8px;
   border-radius: 50%;
   background: var(--tipo);
   box-shadow: 0 0 8px var(--tipo);
+}
+
+:root[data-theme='light'] .tipo-pill .swatch {
+  box-shadow: 0 0 4px var(--tipo);
 }
 
 .building-title {
@@ -568,17 +672,18 @@ input:focus-visible {
   padding: 0 14px;
   border: 0;
   border-radius: 999px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.17), rgba(255, 255, 255, 0.06));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3), inset 0 0 0 1px rgba(255, 255, 255, 0.08), 0 4px 14px rgba(0, 0, 0, 0.25);
+  background: var(--glass-button-bg);
+  box-shadow: var(--glass-button-shadow);
+  color: var(--text);
   font-size: 13px;
   font-weight: 560;
   text-decoration: none;
   white-space: nowrap;
   cursor: pointer;
-  transition: filter 0.15s, transform 0.15s var(--ease);
+  transition: filter 0.15s, transform 0.15s var(--ease), box-shadow 0.15s;
 }
 
-.glass-button:hover { filter: brightness(1.2); }
+.glass-button:hover { filter: var(--glass-button-hover-filter); }
 .glass-button:active { transform: scale(0.96); }
 
 .address-list .swatch { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
@@ -624,13 +729,14 @@ input:focus-visible {
   border: 0;
   border-radius: 24px;
   background: transparent;
+  color: var(--text);
   cursor: pointer;
   transition: background 0.15s, color 0.15s, transform 0.15s var(--ease);
 }
 
 .control:hover { background: var(--fill-1); }
 .control:active { transform: scale(0.9); }
-.control.on { color: #64b5ff; }
+.control.on { color: var(--control-active-color); }
 .control-text { font-size: 13px; font-weight: 700; letter-spacing: 0.02em; }
 
 .control-sep {
@@ -644,7 +750,7 @@ input:focus-visible {
   transition: transform 0.25s var(--ease);
 }
 
-.compass.rotated { color: #ff8a80; }
+.compass.rotated { color: var(--compass-rotated-color); }
 .control.busy svg { animation: pulse 1s ease-in-out infinite; }
 
 /* ---- Estados: carregando, avisos, localização ------------------------ */
@@ -676,8 +782,8 @@ input:focus-visible {
   height: 14px;
   flex-shrink: 0;
   border-radius: 50%;
-  border: 2px solid rgba(255, 255, 255, 0.22);
-  border-top-color: rgba(255, 255, 255, 0.9);
+  border: 2px solid var(--spinner-track);
+  border-top-color: var(--spinner-head);
   animation: spin 0.8s linear infinite;
 }
 
@@ -704,8 +810,9 @@ input:focus-visible {
 }
 
 .toast.error {
-  color: #ffd2cf;
-  background: var(--glass-sheen), rgba(120, 28, 30, 0.5);
+  color: var(--toast-error-color);
+  background: var(--toast-error-bg);
+  box-shadow: var(--toast-error-shadow);
 }
 
 .user-dot {
@@ -713,8 +820,8 @@ input:focus-visible {
   height: 18px;
   border-radius: 50%;
   background: var(--accent);
-  border: 3px solid #fff;
-  box-shadow: 0 0 0 7px rgba(10, 132, 255, 0.25), 0 2px 8px rgba(0, 0, 0, 0.5);
+  border: 3px solid var(--user-dot-border);
+  box-shadow: var(--user-dot-shadow);
 }
 
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -731,7 +838,7 @@ input:focus-visible {
 .app .maplibregl-ctrl.maplibregl-ctrl-attrib {
   margin: 0;
   border-radius: 999px;
-  background: rgba(18, 22, 32, 0.6);
+  background: var(--map-attrib-bg);
   -webkit-backdrop-filter: blur(14px);
   backdrop-filter: blur(14px);
   color: var(--text-3);
@@ -742,14 +849,14 @@ input:focus-visible {
 .app .maplibregl-ctrl-attrib.maplibregl-compact-show { padding: 3px 28px 3px 10px; }
 
 .app .maplibregl-ctrl-attrib-button {
-  background-color: rgba(255, 255, 255, 0.12);
+  background-color: var(--map-attrib-btn-bg);
   border-radius: 50%;
-  filter: invert(1);
+  filter: var(--map-attrib-btn-filter);
 }
 
 .app .maplibregl-ctrl-scale {
   margin-bottom: 6px;
-  border-color: rgba(255, 255, 255, 0.45);
+  border-color: var(--map-scale-border);
   background: transparent;
   color: var(--text-2);
   font-size: 10px;
@@ -764,7 +871,7 @@ input:focus-visible {
   display: grid;
   place-items: center;
   padding: 24px;
-  background: rgba(4, 7, 12, 0.45);
+  background: var(--report-backdrop-bg);
   -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
   animation: fade-in 0.2s;
@@ -777,7 +884,7 @@ input:focus-visible {
   flex-direction: column;
   overflow: hidden;
   border-radius: 32px;
-  --glass-tint: rgba(24, 28, 39, 0.66);
+  --glass-tint: var(--report-glass-tint);
   animation: sheet-in 0.35s var(--ease);
 }
 
@@ -819,12 +926,14 @@ input:focus-visible {
   overflow-y: auto;
   border-right: 1px solid var(--sep);
   scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 
 .report-content {
   padding: 4px 26px 26px;
   overflow-y: auto;
   scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 
 .chip-wrap {
@@ -857,9 +966,9 @@ input:focus-visible {
 .chip:hover { background: var(--fill-2); }
 
 .chip.on {
-  background: rgba(255, 255, 255, 0.18);
+  background: var(--chip-active-bg);
   color: var(--text);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  box-shadow: var(--chip-active-shadow);
 }
 
 .search-field.compact {
@@ -878,6 +987,7 @@ input:focus-visible {
   border-radius: 14px;
   background: var(--fill-1);
   scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 
 .check-list label {
@@ -971,7 +1081,7 @@ input:focus-visible {
     height: 5px;
     margin: 0 auto;
     border-radius: 3px;
-    background: rgba(255, 255, 255, 0.35);
+    background: var(--sheet-handle-bg);
   }
 
   .brand { display: none; }

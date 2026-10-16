@@ -1,3 +1,4 @@
+import type { Theme } from '../constants';
 import { Icon } from './Icon';
 
 interface Props {
@@ -5,6 +6,7 @@ interface Props {
   is3d: boolean;
   all3d: boolean;
   locating: boolean;
+  theme: Theme;
   onZoomIn: () => void;
   onZoomOut: () => void;
   onResetNorth: () => void;
@@ -13,6 +15,7 @@ interface Props {
   onRecenter: () => void;
   onLocate: () => void;
   onReport: () => void;
+  onToggleTheme: () => void;
 }
 
 export function MapControls(props: Props) {
@@ -84,6 +87,16 @@ export function MapControls(props: Props) {
       <div className="glass control-group">
         <button type="button" className="control" aria-label="Relatório" title="Relatório" onClick={props.onReport}>
           <Icon name="chart" />
+        </button>
+        <span className="control-sep" />
+        <button
+          type="button"
+          className="control"
+          aria-label={props.theme === 'light' ? 'Mudar para tema escuro' : 'Mudar para tema claro'}
+          title={props.theme === 'light' ? 'Mudar para tema escuro' : 'Mudar para tema claro'}
+          onClick={props.onToggleTheme}
+        >
+          <Icon name={props.theme === 'light' ? 'moon' : 'sun'} />
         </button>
       </div>
     </nav>
