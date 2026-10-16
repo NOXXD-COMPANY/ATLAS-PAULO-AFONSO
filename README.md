@@ -119,9 +119,11 @@ python3 -m venv .venv
 # 2) Instalar o app (uma vez)
 cd frontend && npm install && cd ..
 
-# 3) Tudo de uma vez
+# 3) Tudo de uma vez (usa dados existentes; importe só quando necessário)
 bash scripts/run.sh
 ```
+
+Para atualizar os dados já importados, rode `bash scripts/run.sh --reimport`.
 
 Ou passo a passo:
 
@@ -197,8 +199,12 @@ Arquitetura em **camadas**, com um módulo de carga em lote separado da aplicaç
 | --- | --- | --- |
 | `GET /` | Verificação de saúde (`{"status": "ok", "service": "atlas-urbano-api"}`) | 200 |
 | `GET /api/buildings` | Edificações como `FeatureCollection` GeoJSON, com filtros e paginação opcionais (tabela abaixo). Sem parâmetros, devolve tudo de uma vez | 200, 422 |
-| `GET /api/buildings/{building_id}` | Uma edificação (campos completos) como `Feature` GeoJSON | 200, 404 |
+| `GET /api/buildings/{building_id}` | Uma edificação (campos completos) como `Feature` GeoJSON, com `enderecos`: todos os endereços que dividem o mesmo footprint | 200, 404 |
 | `GET /api/stats` | Agregados (`total`, `by_tipo`, `by_bairro`, `area_total_m2`, `area_media_m2`) com os mesmos filtros | 200, 422 |
+| `GET /api/search?q=` | Busca para a barra do mapa: prédios (endereço, estabelecimento) e bairros, com um ponto para centralizar. Ignora acento e caixa | 200, 422 |
+| `GET /api/map/meta` | Versão dos dados (entra nas URLs do mapa) e a área com prédios | 200 |
+| `GET /api/map/overview?level=` | Grade de densidade da visão afastada (GeoJSON); `level=0` ~175 m, `level=1` ~88 m | 200, 422 |
+| `GET /api/tiles/{z}/{x}/{y}.pbf?v=` | Tiles vetoriais (MVT) do mapa: pontos nos zooms 12 a 14 (camada `dots`) e polígonos a partir do 14 (camada `buildings`) | 200, 404 |
 
 **Parâmetros de `GET /api/buildings`** (os filtros também valem para `/api/stats`, exceto `light`, `limit` e `offset`):
 
@@ -211,6 +217,7 @@ Arquitetura em **camadas**, com um módulo de carga em lote separado da aplicaç
 | `em_cobertura` | `true` esconde endereços sem polígono que estejam fora da janela de cobertura |
 | `limit` | De 1 a 20.000 |
 | `offset` | A partir de 0; a ordem é estável por `id` |
+| `after_id` | Cursor por `id` (alternativa ao `offset`, rápida em páginas altas) |
 
 Respostas são comprimidas com GZip (acima de 1.000 bytes). Um `bbox` malformado, `limit` fora da faixa ou `offset` negativo devolvem 422.
 
@@ -374,11 +381,10 @@ Atores: **Cliente** (consulta mapa e relatórios) e **Equipe Mantenedora** (carg
 ## Limitações conhecidas
 
 - **Credenciais**: `import_data.py` traz usuário, porta e senha escritos no arquivo, **diferentes** dos de `config.py` e do `db.sh`. Isso é um risco de segurança (se o repositório for público ou compartilhado, trocar a senha) e quebra o "rodar com um comando". Mover para variáveis de ambiente, numa configuração única.
+- **Níveis de detalhe do mapa**: de perto, polígonos (zoom 14+); entre os zooms 12 e 14, os prédios pequenos viram pontos do tamanho real e os grandes continuam polígonos; mais longe, grades de densidade de ~88 m e ~175 m. O servidor pré-gera os tiles dos zooms 12 a 14 em segundo plano.
 - **OSM sem verificação de sobreposição**: os polígonos do OSM que não casam com nenhum endereço são inseridos sem checar se já existe um polígono do Overture no mesmo lugar, o que pode duplicar edificações (a contagem de 400 deve ser auditada).
 - **"Edificação" é ambígua**: a tabela tem uma linha por endereço, então 87.951 registros não são 87.951 prédios. O relatório rotula a contagem como "Edificações".
 - **Prédios sem endereço nem tipo** (~26 mil): o Overture municipal trouxe a forma, mas sem uso conhecido (ficam `desconhecido` até conferência de campo ou 2ª fonte com atributo).
-- **Carga inicial ainda é a cidade inteira**: o frontend busca tudo em páginas de 5 mil features (~13 MB cada, antes do GZip), sem usar `bbox` nem `light`. Filtros e agregações do relatório rodam no navegador.
-- **Custo no navegador**: a cada página carregada, o frontend recalcula uma chave de geometria (`JSON.stringify`) para todas as features, e o enquadramento inicial do mapa usa só a primeira página.
 - **`em_cobertura` hoje não filtra nada**: a janela de cobertura (`JANELA_COBERTURA`, fixa no código) passou a cobrir o município inteiro.
 - **Contrato Pydantic não ligado**: `schemas.py` é usado nos testes, mas as rotas não declaram `response_model`; a documentação em `/docs` não mostra o formato das respostas.
 - **`MBRIntersects` é aproximado**: compara retângulos envolventes, então o filtro `bbox` pode trazer prédios que só encostam na área.
@@ -390,7 +396,7 @@ Atores: **Cliente** (consulta mapa e relatórios) e **Equipe Mantenedora** (carg
 - **SRID 0** em todas as geometrias; a área é calculada no ETL por projeção local aproximada.
 - **Heurística espacial simples**: em ponto ambíguo, escolhe o polígono mais próximo, sem tratar multiplicidade.
 - **Testes parciais**: cobrem filtros, contratos e endpoints, mas não validam o cruzamento espacial do ETL (só a classificação `best_type`), e os de integração dependem dos números da carga atual.
-- **Dependência de serviços externos de tiles** (OpenStreetMap), o que contraria o objetivo de mapa offline (RF09).
+- **Dependência de serviço externo para o mapa base** (OpenFreeMap, dados do OpenStreetMap), o que contraria o objetivo de mapa offline (RF09).
 
 ## Roadmap
 

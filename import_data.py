@@ -4,6 +4,7 @@ uma linha por endereço, mais os prédios sem nenhum endereço."""
 
 import json
 import math
+import argparse
 from collections import Counter
 
 import pymysql
@@ -39,7 +40,7 @@ POINT_BUFFER_DEG = 0.000045
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS buildings (
     id                  VARCHAR(64)  NOT NULL PRIMARY KEY,
-    geom                GEOMETRY     NOT NULL,
+    geom                GEOMETRY     NOT NULL{srid_attr},
     area_m2             DOUBLE       NULL,
     tipo                VARCHAR(32)  NOT NULL DEFAULT 'desconhecido',
     endereco            VARCHAR(255) NULL,
@@ -218,7 +219,16 @@ def relate_points_to_buildings(buildings, points):
     return building_to_points, polys
 
 
-def main():
+def main(if_empty=False):
+    if if_empty:
+        with connect_db() as conn, conn.cursor() as cur:
+            cur.execute("SHOW TABLES LIKE 'buildings'")
+            if cur.fetchone():
+                cur.execute("SELECT COUNT(*) FROM buildings")
+                if cur.fetchone()[0] > 0:
+                    print("Dados já importados; pulando carga. Use --reimport para atualizar.")
+                    return
+
     print("Lendo edificações do Overture...")
     building_features = load_buildings()
     print(f"  {len(building_features)} prédios")
@@ -253,8 +263,15 @@ def main():
     conn = connect_db()
     try:
         with conn.cursor() as cur:
+            # MySQL 8 só usa o SPATIAL INDEX se a coluna fixar o SRID, e o
+            # ST_GeomFromGeoJSON dele assume 4326. O MariaDB já grava SRID 0
+            # e não aceita esse atributo.
+            cur.execute("SELECT VERSION()")
+            is_mysql = "mariadb" not in cur.fetchone()[0].lower()
             cur.execute("DROP TABLE IF EXISTS buildings")
-            cur.execute(SCHEMA)
+            cur.execute(SCHEMA.format(srid_attr=" SRID 0" if is_mysql else ""))
+            geom_sql = ("ST_GeomFromGeoJSON(%s, 1, 0)" if is_mysql
+                        else "ST_GeomFromGeoJSON(%s)")
 
             codes = [str(q["properties"].get("COD_UNICO_ENDERECO")) for q in qg_features]
             dupes = {c for c, n in Counter(codes).items() if n > 1}
@@ -271,6 +288,14 @@ def main():
                 return "; ".join(dict(s).get("dataset", "?") for s in sources) or None
 
             batch = []
+            area_cache = {}
+
+            def cached_area(kind, index, geom):
+                key = (kind, index)
+                if key not in area_cache:
+                    area_cache[key] = _area_m2(geom)
+                return area_cache[key]
+
             for qi, qf in enumerate(qg_features):
                 qp = qf["properties"]
                 bi = point_to_building.get(qi)
@@ -279,6 +304,7 @@ def main():
                     geom = polys[bi]
                     num_pav = oprops.get("num_floors")
                     fonte = fonte_of(oprops)
+                    area = cached_area("overture", bi, geom)
                 elif qi in osm_match:
                     oi = osm_match[qi]
                     otags = osm_features[oi]["properties"] or {}
@@ -286,14 +312,16 @@ def main():
                     geom = osm_polys[oi]
                     num_pav = None
                     fonte = "OpenStreetMap"
+                    area = cached_area("osm", oi, geom)
                 else:
                     oprops = {}
                     x, y = qf["geometry"]["coordinates"]
                     geom = Point(x, y).buffer(POINT_BUFFER_DEG)
                     num_pav = None
                     fonte = "QG/CNEFE"
+                    area = _area_m2(geom)
                 batch.append((
-                    row_id(codes[qi]), json.dumps(mapping(geom)), _area_m2(geom),
+                    row_id(codes[qi]), json.dumps(mapping(geom)), area,
                     best_type(qp, oprops),
                     qp.get("LOGRAD_NUM") or None, qp.get("DSC_LOCALIDADE") or None,
                     qp.get("DSC_ESTABELECIMENTO") or None, num_pav, fonte,
@@ -305,7 +333,8 @@ def main():
                 props = b["properties"]
                 geom = polys[bi]
                 batch.append((
-                    b["id"], json.dumps(mapping(geom)), _area_m2(geom),
+                    b["id"], json.dumps(mapping(geom)),
+                    cached_area("overture", bi, geom),
                     best_type(None, props),
                     None, None, None, props.get("num_floors"), fonte_of(props),
                 ))
@@ -320,7 +349,7 @@ def main():
                 oid = str(otags.get("osm_id", oi)).replace("/", "-")
                 batch.append((
                     f"osm-{oid}", json.dumps(mapping(osm_polys[oi])),
-                    _area_m2(osm_polys[oi]),
+                    cached_area("osm", oi, osm_polys[oi]),
                     best_type(None, {"class": otags.get("building")}),
                     None, None, None, None, "OpenStreetMap",
                 ))
@@ -329,7 +358,7 @@ def main():
             sql = (
                 "INSERT INTO buildings "
                 "(id, geom, area_m2, tipo, endereco, bairro, estabelecimento, num_pavimentos, fonte) "
-                "VALUES (%s, ST_GeomFromGeoJSON(%s), %s, %s, %s, %s, %s, %s, %s)"
+                f"VALUES (%s, {geom_sql}, %s, %s, %s, %s, %s, %s, %s)"
             )
             CHUNK = 500
             for i in range(0, len(batch), CHUNK):
@@ -345,4 +374,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--if-empty", action="store_true")
+    main(if_empty=parser.parse_args().if_empty)

@@ -1,0 +1,237 @@
+import type { ExpressionSpecification, Map as MapLibreMap } from 'maplibre-gl';
+import { ALTURA_PADRAO_POR_TIPO, ALTURA_PAVIMENTO_M, FONTE_PONTO, TIPO_CORES, TIPOS_ORDEM } from './constants';
+import {
+  buildingTileUrl,
+  DOT_MIN_ZOOM,
+  dotRadiusExpression,
+  fadeRamp,
+  FOOTPRINT_MAX_ZOOM,
+  FOOTPRINT_MIN_ZOOM,
+  navigableBounds,
+  overviewColorExpression,
+  overviewCountExpression,
+  OVERVIEW_LEVELS,
+  overviewUrl,
+  type MapMeta,
+} from './mapTiles';
+
+// Mapa base vetorial, gratuito e sem chave (openfreemap.org). Os rótulos
+// ficam por cima dos nossos prédios; o resto é recolorido em styleBasemap.
+export const BASEMAP_URL = 'https://tiles.openfreemap.org/styles/dark';
+
+export const SELECTED_LAYER = 'selected-building-3d';
+export const SELECTED_OUTLINE = 'selected-outline';
+export const FILL_LAYER = 'buildings-fill';
+export const OUTLINE_LAYER = 'buildings-outline';
+export const DOT_LAYER = 'buildings-dots';
+export const EXTRUSION_LAYER = 'buildings-3d';
+export const overviewId = (level: number) => `overview-${level}`;
+export const OVERVIEW_LAYERS = OVERVIEW_LEVELS.map(({ level }) => overviewId(level));
+export const CLICKABLE_LAYERS = [SELECTED_LAYER, EXTRUSION_LAYER, FILL_LAYER, DOT_LAYER];
+
+export function colorByTipo(tipo: unknown): ExpressionSpecification {
+  return ['match', tipo, ...TIPOS_ORDEM.flatMap((t) => [t, TIPO_CORES[t]]), TIPO_CORES.desconhecido] as any;
+}
+
+const tipoColor = colorByTipo(['get', 'tipo']);
+
+/** Mesma regra de alturaDoPredio (constants.ts), como expressão do mapa. */
+const heightExpression: any = ['case',
+  ['>', ['coalesce', ['get', 'num_pavimentos'], 0], 0],
+  ['*', ['get', 'num_pavimentos'], ALTURA_PAVIMENTO_M],
+  ['match', ['get', 'tipo'], ...TIPOS_ORDEM.flatMap((t) => [t, ALTURA_PADRAO_POR_TIPO[t]]), ALTURA_PADRAO_POR_TIPO.desconhecido],
+];
+
+// Paleta do mapa base: azul-grafite profundo em vez do preto puro do estilo
+// original, com a água bem separada da terra.
+const BASEMAP = {
+  background: '#0b0f17',
+  land: '#0f141e',
+  green: '#0e1a18',
+  water: '#0c2235',
+  waterway: '#123049',
+  roadMinor: '#1a2130',
+  roadMajor: '#273043',
+  roadMotorway: '#323d52',
+  label: '#8b97ab',
+  labelHalo: 'rgba(11, 15, 23, 0.92)',
+};
+
+function paint(map: MapLibreMap, layer: string, property: string, value: unknown) {
+  try {
+    map.setPaintProperty(layer, property as any, value);
+  } catch {
+    // Uma camada do estilo externo pode não ter essa propriedade.
+  }
+}
+
+/**
+ * Recolore o estilo escuro do OpenFreeMap e esconde os prédios dele (os
+ * nossos vêm do backend). Devolve a primeira camada de rótulos, abaixo da
+ * qual entram os dados.
+ */
+export function styleBasemap(map: MapLibreMap): string | undefined {
+  const layers = map.getStyle().layers ?? [];
+  let firstLabel: string | undefined;
+  for (const layer of layers) {
+    const id = layer.id;
+    const sourceLayer = 'source-layer' in layer ? layer['source-layer'] : undefined;
+    if (layer.type === 'background') paint(map, id, 'background-color', BASEMAP.background);
+    else if (layer.type === 'fill') {
+      if (sourceLayer === 'building') map.setLayoutProperty(id, 'visibility', 'none');
+      else if (sourceLayer === 'water') paint(map, id, 'fill-color', BASEMAP.water);
+      else if (/park|wood|grass/.test(id)) paint(map, id, 'fill-color', BASEMAP.green);
+      else if (sourceLayer === 'landuse' || sourceLayer === 'landcover') paint(map, id, 'fill-color', BASEMAP.land);
+    } else if (layer.type === 'line') {
+      if (sourceLayer === 'waterway') paint(map, id, 'line-color', BASEMAP.waterway);
+      else if (/motorway/.test(id) && !/casing/.test(id)) paint(map, id, 'line-color', BASEMAP.roadMotorway);
+      else if (/major/.test(id) && !/casing/.test(id)) paint(map, id, 'line-color', BASEMAP.roadMajor);
+      else if (/minor|path/.test(id)) paint(map, id, 'line-color', BASEMAP.roadMinor);
+      else if (/casing/.test(id)) paint(map, id, 'line-color', BASEMAP.background);
+    } else if (layer.type === 'symbol') {
+      paint(map, id, 'text-color', BASEMAP.label);
+      paint(map, id, 'text-halo-color', BASEMAP.labelHalo);
+      // Rótulos de vias e lugares ficam acima dos prédios; os da água, não.
+      if (!firstLabel && sourceLayer !== 'water_name') firstLabel = id;
+    }
+  }
+  return firstLabel;
+}
+
+/** Prédio selecionado: extrudado em 3D e com um contorno claro. Fica no topo. */
+export function addSelectionLayers(map: MapLibreMap) {
+  map.addSource('selected', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+  map.addLayer({
+    id: SELECTED_LAYER, type: 'fill-extrusion', source: 'selected',
+    paint: {
+      'fill-extrusion-color': tipoColor,
+      'fill-extrusion-height': ['number', ['get', 'altura_3d_m'], ALTURA_PADRAO_POR_TIPO.desconhecido],
+      'fill-extrusion-base': 0,
+      'fill-extrusion-opacity': 0.95,
+      'fill-extrusion-vertical-gradient': true,
+    },
+  });
+  map.addLayer({
+    id: SELECTED_OUTLINE, type: 'line', source: 'selected',
+    paint: { 'line-color': '#ffffff', 'line-width': 2, 'line-opacity': 0.9, 'line-blur': 0.5 },
+  });
+}
+
+/** Grades da mais grossa à mais fina, depois pontos e polígonos (ver mapTiles.ts). */
+export function addDataLayers(map: MapLibreMap, meta: MapMeta, apiUrl: string, beforeId?: string) {
+  for (const { level, enter, exit } of OVERVIEW_LEVELS) {
+    map.addSource(overviewId(level), { type: 'geojson', data: overviewUrl(apiUrl, meta.version, level) });
+    // As mais finas ficam por cima e cobrem a anterior enquanto ela sai.
+    map.addLayer({
+      id: overviewId(level), type: 'fill', source: overviewId(level),
+      minzoom: enter ?? 0, maxzoom: exit + 1,
+      paint: { 'fill-antialias': false },
+    }, beforeId);
+  }
+  map.addSource('buildings', {
+    type: 'vector',
+    tiles: [buildingTileUrl(apiUrl, meta.version)],
+    minzoom: DOT_MIN_ZOOM,
+    maxzoom: FOOTPRINT_MAX_ZOOM,
+    // Fora da área com dados não há o que pedir ao servidor.
+    ...(meta.bounds ? { bounds: meta.bounds } : {}),
+  });
+  // Um disco com a área de cada prédio; no zoom 14 vira o próprio polígono.
+  map.addLayer({
+    id: DOT_LAYER, type: 'circle', source: 'buildings', 'source-layer': 'dots',
+    minzoom: DOT_MIN_ZOOM, maxzoom: FOOTPRINT_MIN_ZOOM + 1,
+    paint: {
+      'circle-color': tipoColor,
+      'circle-radius': dotRadiusExpression(),
+      'circle-opacity': fadeRamp(DOT_MIN_ZOOM, FOOTPRINT_MIN_ZOOM, 0.9),
+      // Inclinados como os polígonos, para a troca não mudar a perspectiva.
+      'circle-pitch-alignment': 'map',
+      'circle-pitch-scale': 'map',
+    },
+  }, beforeId);
+  map.addLayer({
+    id: FILL_LAYER, type: 'fill', source: 'buildings', 'source-layer': 'buildings',
+    paint: {
+      'fill-color': tipoColor,
+      // Os prédios grandes já vêm como polígono desde o zoom 12 (backend/main.py).
+      'fill-opacity': fadeRamp(DOT_MIN_ZOOM, null, 0.86),
+    },
+  }, beforeId);
+  map.addLayer({
+    id: OUTLINE_LAYER, type: 'line', source: 'buildings', 'source-layer': 'buildings',
+    paint: {
+      // Sobre o fundo escuro, um traço escuro separa prédios colados.
+      'line-color': 'rgba(5, 8, 14, 0.7)',
+      'line-width': 0.6,
+      'line-opacity': ['interpolate', ['linear'], ['zoom'], FOOTPRINT_MIN_ZOOM + 0.5, 0, FOOTPRINT_MIN_ZOOM + 1.5, 1],
+    },
+  }, beforeId);
+  // Todos os prédios em 3D. Crescem do chão ao aproximar, para a troca com
+  // os pontos e a planta 2D não saltar.
+  map.addLayer({
+    id: EXTRUSION_LAYER, type: 'fill-extrusion', source: 'buildings', 'source-layer': 'buildings',
+    minzoom: FOOTPRINT_MIN_ZOOM,
+    paint: {
+      'fill-extrusion-color': tipoColor,
+      'fill-extrusion-height': ['interpolate', ['linear'], ['zoom'], FOOTPRINT_MIN_ZOOM, 0, FOOTPRINT_MIN_ZOOM + 1, heightExpression],
+      'fill-extrusion-base': 0,
+      'fill-extrusion-opacity': 0.9,
+      'fill-extrusion-vertical-gradient': true,
+    },
+  }, beforeId);
+  if (meta.bounds) map.setMaxBounds(navigableBounds(meta.bounds));
+}
+
+export function removeDataLayers(map: MapLibreMap) {
+  for (const layer of [...OVERVIEW_LAYERS, DOT_LAYER, FILL_LAYER, OUTLINE_LAYER, EXTRUSION_LAYER]) {
+    if (map.getLayer(layer)) map.removeLayer(layer);
+  }
+  for (const source of [...OVERVIEW_LAYERS, 'buildings']) {
+    if (map.getSource(source)) map.removeSource(source);
+  }
+}
+
+export interface DataFilters {
+  showPontos: boolean;
+  soDoSelecionado: boolean;
+  selectedGeometryKey: string;
+  tipos: readonly string[];
+}
+
+/** Filtros da barra lateral aplicados a todas as escalas: grade, pontos e polígonos. */
+/**
+ * Todos os prédios em 3D ou só o selecionado. Com todos em 3D o contorno 2D
+ * some: desenhado no chão, ele cortaria as paredes dos prédios.
+ */
+export function setAllBuildings3d(map: MapLibreMap, all: boolean) {
+  map.setLayoutProperty(EXTRUSION_LAYER, 'visibility', all ? 'visible' : 'none');
+  map.setLayoutProperty(OUTLINE_LAYER, 'visibility', all ? 'none' : 'visible');
+}
+
+export function applyDataFilters(map: MapLibreMap, { showPontos, soDoSelecionado, selectedGeometryKey, tipos }: DataFilters) {
+  const clauses: any[] = [];
+  if (tipos.length < TIPOS_ORDEM.length) clauses.push(['in', ['get', 'tipo'], ['literal', tipos]]);
+  if (!showPontos) clauses.push(['!=', ['get', 'fonte'], FONTE_PONTO]);
+  else if (soDoSelecionado) {
+    // Esconde os endereços soltos, menos os do prédio selecionado; os
+    // prédios da vizinhança continuam no mapa.
+    const sameBuilding = selectedGeometryKey ? ['==', ['get', 'geometry_key'], selectedGeometryKey] : false;
+    clauses.push(['any', ['!=', ['get', 'fonte'], FONTE_PONTO], sameBuilding]);
+  }
+  const filter = clauses.length === 0 ? null : clauses.length === 1 ? clauses[0] : ['all', ...clauses];
+  for (const layer of [DOT_LAYER, FILL_LAYER, OUTLINE_LAYER]) map.setFilter(layer, filter);
+  // Endereços sem prédio não sobem em 3D; o selecionado sai daqui porque a
+  // camada de seleção já o desenha (as duas no mesmo lugar piscariam).
+  const extrusionClauses: any[] = [...clauses, ['!=', ['get', 'fonte'], FONTE_PONTO]];
+  if (selectedGeometryKey) extrusionClauses.push(['!=', ['get', 'geometry_key'], selectedGeometryKey]);
+  map.setFilter(EXTRUSION_LAYER, ['all', ...extrusionClauses]);
+
+  const count = overviewCountExpression(showPontos, tipos);
+  // Quanto mais prédios, mais opaca a célula.
+  const density: any = ['interpolate', ['linear'], count, 1, 0.28, 15, 0.5, 60, 0.75];
+  for (const { level, enter, exit } of OVERVIEW_LEVELS) {
+    map.setFilter(overviewId(level), ['>', count, 0]);
+    map.setPaintProperty(overviewId(level), 'fill-color', overviewColorExpression(showPontos, tipos, TIPO_CORES));
+    map.setPaintProperty(overviewId(level), 'fill-opacity', fadeRamp(enter, exit, density));
+  }
+}
