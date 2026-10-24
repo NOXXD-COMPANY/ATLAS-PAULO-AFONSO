@@ -253,7 +253,7 @@ def search(query, limit=8):
         cur.execute(
             "SELECT CAST(E.ID AS CHAR) AS id, EN.LOGRADOURO_NUM AS endereco, "
             "B.NOME AS bairro, EN.ESTABELECIMENTO AS estabelecimento, E.TIPO_USO AS tipo, "
-            "ST_X(ST_Centroid(E.GEOM)) AS lng, ST_Y(ST_Centroid(E.GEOM)) AS lat "
+            "ST_X(ST_Centroid(ST_SRID(E.GEOM, 0))) AS lng, ST_Y(ST_Centroid(ST_SRID(E.GEOM, 0))) AS lat "
             f"{FROM_SEARCH} WHERE {where} "
             "AND (EN.LOGRADOURO_NUM IS NOT NULL OR EN.ESTABELECIMENTO IS NOT NULL) "
             # Quem começa com o texto digitado vem primeiro.
@@ -269,7 +269,7 @@ def search(query, limit=8):
         terms = query.split()[:MAX_SEARCH_TERMS]
         cur.execute(
             "SELECT B.NOME AS bairro, COUNT(*) AS total, "
-            "AVG(ST_X(ST_Centroid(E.GEOM))) AS lng, AVG(ST_Y(ST_Centroid(E.GEOM))) AS lat "
+            "AVG(ST_X(ST_Centroid(ST_SRID(E.GEOM, 0)))) AS lng, AVG(ST_Y(ST_Centroid(ST_SRID(E.GEOM, 0)))) AS lat "
             f"{FROM_EDIFICACOES} WHERE "
             + " AND ".join(["B.NOME LIKE %s"] * len(terms))
             + " GROUP BY B.NOME ORDER BY total DESC LIMIT 4",
@@ -313,7 +313,7 @@ def fetch_centroids():
     """Um ponto por footprint; defensivamente deduplica por geometry_key."""
     with connection() as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT ST_X(ST_Centroid(E.GEOM)) AS x, ST_Y(ST_Centroid(E.GEOM)) AS y, "
+            "SELECT ST_X(ST_Centroid(ST_SRID(E.GEOM, 0))) AS x, ST_Y(ST_Centroid(ST_SRID(E.GEOM, 0))) AS y, "
             f"E.TIPO_USO AS tipo, F.NOME AS fonte, {GEOMETRY_KEY} "
             f"{FROM_EDIFICACOES} ORDER BY E.ID"
         )
@@ -344,7 +344,10 @@ def fetch_building_tile(bounds, cancelled=None):
     for row in rows:
         unique.setdefault(row["geometry_key"], row)
     rows = list(unique.values())
-    geometries = shapely.from_wkb([row["wkb"] for row in rows])
+    # SRID 4674 armazena lat/lon; shapely.from_wkb interpreta x=lat, y=lon.
+    # Invertemos para lon/lat que o MVT e o frontend esperam.
+    raw = shapely.from_wkb([row["wkb"] for row in rows])
+    geometries = shapely.transform(raw, lambda c: c[:, ::-1])
     return [
         {
             "geometry": geometry,
