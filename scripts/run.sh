@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sobe tudo (MySQL + importação + backend + frontend) e mantém os processos.
+# Sobe tudo (importação + backend + frontend) e mantém os processos.
 set -e
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,8 +22,11 @@ else
 fi
 
 echo "==> 4/4 Frontend (Vite em :5173)"
-if ! cd frontend && npm install --no-audit --no-fund >/dev/null 2>&1; then
-  echo "  (npm install falhou, seguindo sem ele)"
+cd frontend
+if [ ! -x node_modules/.bin/vite ]; then
+  if ! npm install --no-audit --no-fund >/dev/null 2>&1; then
+    echo "  (npm install falhou, seguindo sem ele)"
+  fi
 fi
 if curl -sf http://127.0.0.1:5173/ >/dev/null 2>&1; then
   echo "  frontend já rodando em http://127.0.0.1:5173/"

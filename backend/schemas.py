@@ -60,3 +60,35 @@ class StatsResponse(BaseModel):
     by_bairro: Dict[str, int] = Field(default_factory=dict)
     area_total_m2: Optional[float] = None
     area_media_m2: Optional[float] = None
+
+
+class UserCreate(BaseModel):
+    """Cadastro: nome, e-mail e senha (6–72 caracteres; teto do bcrypt)."""
+
+    nome: str = Field(min_length=2, max_length=128)
+    email: str = Field(min_length=3, max_length=255)
+    senha: str = Field(min_length=6, max_length=72)
+
+
+class UserLogin(BaseModel):
+    """Login: e-mail + senha."""
+
+    email: str = Field(min_length=3, max_length=255)
+    senha: str = Field(min_length=1, max_length=72)
+
+
+class UserPublic(BaseModel):
+    """O que a API devolve: nunca inclui a senha nem o hash."""
+
+    id: int
+    nome: str
+    email: str
+    criado_em: Any = None
+
+
+class AuthToken(BaseModel):
+    """Resposta do login/cadastro: token Bearer + quem entrou."""
+
+    access_token: str
+    token_type: str = "bearer"
+    user: UserPublic
