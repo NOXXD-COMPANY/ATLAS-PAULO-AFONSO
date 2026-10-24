@@ -1,6 +1,6 @@
 """Testes essenciais (P6): só pontos críticos, sem cobertura completa.
 
-Roda com: ./.venv/bin/python -m pytest backend/tests -q
+Roda com: doppler run -- python -m pytest backend/tests -q
 (dependências de dev: pytest, httpx)
 """
 
@@ -45,7 +45,7 @@ def test_build_where_vazio():
 
 def test_build_where_bbox_usa_indice_espacial():
     clause, params = db.build_where(bbox=(-38.24, -9.41, -38.21, -9.39))
-    assert "MBRIntersects(geom, ST_GeomFromText(%s))" in clause
+    assert "MBRIntersects(E.GEOM, ST_GeomFromText(%s, 4674" in clause
     assert params[0].startswith("POLYGON((")
 
 
@@ -63,14 +63,14 @@ def test_build_where_combina_tudo_na_ordem():
 
 def test_build_where_apenas_bairro():
     clause, params = db.build_where(bairros=["CENTRO"])
-    assert clause == "WHERE bairro IN (%s)"
+    assert clause == "WHERE B.NOME IN (%s)"
     assert params == ["CENTRO"]
 
 
 # --- P3: conversão para GeoJSON ---------------------------------------------
 
 def _row(full=True):
-    base = {"ST_AsGeoJSON(geom)": '{"type":"Point","coordinates":[-38.2,-9.4]}'}
+    base = {"geojson": '{"type":"Point","coordinates":[-38.2,-9.4]}'}
     if full:
         base.update({
             "id": "x1", "area_m2": 112.5, "tipo": None, "endereco": "Rua A",
@@ -116,6 +116,26 @@ def test_best_type_qg_prevalece():
     assert import_data.best_type({}, {"class": "church"}) == "religioso"
     assert import_data.best_type({}, {}) == "desconhecido"
     assert import_data.best_type(None, None) == "desconhecido"
+
+
+def test_classify_origem_tipo():
+    import import_data
+    assert import_data.classify({"COD_ESPECIE": "1"}, None) == ("residencial", "cnefe")
+    assert import_data.classify({}, {"subtype": "civic"})[1] == "overture_subtype"
+    assert import_data.classify({}, {"class": "house"})[1] == "overture_class"
+    assert import_data.classify(None, None) == ("desconhecido", "sem_dado")
+
+
+def test_match_points_metodo_e_distancia():
+    import import_data
+    from shapely.geometry import box
+    polys = [box(0, 0, 0.001, 0.001)]
+    pts = [{"geometry": {"coordinates": c}}
+           for c in ([0.0005, 0.0005], [0.0011, 0.0005], [0.01, 0.01])]
+    m = import_data.match_points(polys, pts)
+    assert m[0] == (0, "contido", 0.0)
+    assert m[1][:2] == (0, "tolerancia") and 10 < m[1][2] < 12  # ~11 m
+    assert 2 not in m
 
 
 # --- Endpoints principais (db mockado: sem banco) ---------------------------
@@ -195,28 +215,3 @@ def test_integracao_bbox_coerente_com_stats():
     assert stats["by_tipo"] == {"comercial": len(feats)}
     for f in feats:
         FeatureLight.model_validate(f)
-
-
-# --- Cobertura: esconder bolinhas fora da janela com polígonos ---------------
-
-def test_build_where_em_cobertura():
-    clause, params = db.build_where(em_cobertura=True)
-    assert "QG/CNEFE" in params
-    assert "MBRIntersects" in clause
-
-
-def test_build_where_em_cobertura_combina_com_bbox():
-    clause, params = db.build_where(
-        bbox=(-38.24, -9.41, -38.21, -9.39), em_cobertura=True)
-    assert clause.count("MBRIntersects") == 2
-    assert params[-2] == "QG/CNEFE"
-
-
-@pytest.mark.skipif(not _db_vivo(), reason="MariaDB local fora do ar")
-def test_integracao_em_cobertura_remove_so_bolinhas_fora():
-    # Cobertura municipal: 87951 linhas, tudo dentro da janela.
-    total = db.fetch_stats()["total"]
-    filtrado = db.fetch_stats(em_cobertura=True)["total"]
-    assert (total, filtrado) == (87951, 87951)
-    feats = db.fetch_all_buildings(em_cobertura=True, limit=20000)
-    assert len(feats) == 20000  # primeira página cheia: sem furo

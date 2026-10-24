@@ -1,5 +1,13 @@
-DB_HOST = "127.0.0.1"
-DB_PORT = 3306
-DB_USER = "atlas"
-DB_PASSWORD = "atlas"
-DB_NAME = "atlas_urbano"
+"""Credenciais do banco, injetadas pelo Doppler (`doppler run -- ...`)."""
+
+import os
+
+DB_HOST = os.getenv("DB_HOST")
+DB_PORT = int(os.getenv("DB_PORT", "3306"))
+DB_USER = os.getenv("DB_USER")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+DB_NAME = os.getenv("DB_NAME")              # ATLAS: produção, lido pela API
+DB_NAME_STAGE = os.getenv("DB_NAME_STAGE")  # ATLAS_STAGE: rascunho da importação
+
+# SIRGAS 2000 geográfico: SRID das colunas GEOM, PONTO_ROTULO e PT.
+SRID = 4674

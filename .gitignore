@@ -18,3 +18,9 @@ qg_*.json*
 # Node
 frontend/node_modules/
 frontend/dist/
+
+# Folders
+*.agents/
+
+# Doppler
+.doppler.yaml

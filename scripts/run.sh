@@ -5,17 +5,17 @@ set -e
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-echo "==> 1/4 Banco de dados"
-bash scripts/db.sh start
+echo "==> 1/4 Credenciais do banco (Doppler)"
+command -v doppler >/dev/null || { echo "ERRO: instale o Doppler CLI"; exit 1; }
 
 echo "==> 2/4 Importação dos dados reais para o MySQL"
-"./.venv/bin/python" import_data.py
+doppler run -- "./.venv/bin/python" import_data.py --promover
 
 echo "==> 3/4 Backend (FastAPI em :8000)"
 if curl -sf http://127.0.0.1:8000/ >/dev/null 2>&1; then
   echo "  backend já rodando"
 else
-  nohup ./.venv/bin/python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 \
+  nohup doppler run -- ./.venv/bin/python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 \
     > /tmp/atlas-uvicorn.log 2>&1 &
   sleep 3
   echo "  backend OK"

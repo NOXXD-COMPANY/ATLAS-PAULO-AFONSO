@@ -38,10 +38,6 @@ def list_buildings(
         default=False,
         description="Só campos de renderização (tipo, fonte, num_pavimentos)",
     ),
-    em_cobertura: bool = Query(
-        default=False,
-        description="Esconde bolinhas fora da janela com polígonos",
-    ),
     limit: int | None = Query(default=None, ge=1, le=db.MAX_LIMIT),
     offset: int = Query(default=0, ge=0),
 ):
@@ -61,7 +57,6 @@ def list_buildings(
         light=light,
         limit=limit,
         offset=offset,
-        em_cobertura=em_cobertura,
     )
     body = {
         "type": "FeatureCollection",
@@ -77,7 +72,6 @@ def get_stats(
     bairro: list[str] | None = Query(default=None),
     tipo: str | None = None,
     fonte: str | None = None,
-    em_cobertura: bool = Query(default=False),
 ):
     """Agregados (total, por tipo/bairro, áreas) com os mesmos filtros."""
     try:
@@ -85,8 +79,7 @@ def get_stats(
     except ValueError:
         raise HTTPException(status_code=422, detail="bbox inválido")
     return JSONResponse(content=db.fetch_stats(
-        bbox=parsed_bbox, bairros=bairro, tipo=tipo, fonte=fonte,
-        em_cobertura=em_cobertura))
+        bbox=parsed_bbox, bairros=bairro, tipo=tipo, fonte=fonte))
 
 
 @app.get("/api/buildings/{building_id}")

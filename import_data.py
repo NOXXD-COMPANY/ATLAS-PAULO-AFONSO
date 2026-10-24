@@ -1,19 +1,25 @@
 #!/usr/bin/env python3
-"""Importa edificações (Overture) e endereços (QG/CNEFE) para o MySQL:
-uma linha por endereço, mais os prédios sem nenhum endereço."""
+"""Importa edificações (Overture/OSM) e endereços (QG/CNEFE) para o banco
+de rascunho (DB_NAME_STAGE). Com --promover, copia o resultado para o banco
+de produção (DB_NAME) numa única transação.
 
+Rode sempre com: doppler run -- python import_data.py [--promover]
+"""
+
+import argparse
 import json
-import math
+import os
 from collections import Counter
 
-import pymysql
-
 from shapely.geometry import Point, shape, mapping
-from shapely.ops import transform
 from shapely import strtree
+
+from backend.config import DB_NAME, DB_NAME_STAGE, SRID
+from backend.db import connect
 
 DATA_DIR = "data/raw"
 OVERTURE_FILES = [
+    f"{DATA_DIR}/overture/edificacoes_overture.geojson",
     f"{DATA_DIR}/overture/overture-2026-08-19.0-building--38.236,-9.410,-38.212,-9.395.geojson",
     f"{DATA_DIR}/overture/overture-2026-08-19.0-building-municipio.geojson",
 ]
@@ -21,35 +27,24 @@ OVERTURE_FILES = [
 # não tem polígono. Ausência do arquivo só desliga o fallback.
 OSM_BUILDINGS = f"{DATA_DIR}/osm/osm_buildings_paulo_afonso.geojson"
 MUNICIPIO_BOUNDARY = f"{DATA_DIR}/municipio_boundary.geojson"
-QG_ENDERECOS = f"{DATA_DIR}/qg/qg_810_endereco_Munic2924009.json"
+QG_ENDERECOS = f"{DATA_DIR}/cnefe_json/dados_cnfe.json"
 MUNICIPIO = "2924009"  # Paulo Afonso/BA
-
-DB_HOST = "127.0.0.1"
-DB_PORT = 3306
-DB_USER = "atlas"
-DB_PASSWORD = "atlas"
-DB_NAME = "atlas_urbano"
 
 # ~15 m de tolerância na borda (ex.: porta na fachada, erro de GPS).
 POINT_TOLERANCE_DEG = 0.000135
+# shortcut: 1° ≈ 111.320 m sem corrigir pela latitude (erro < 2% em -9°),
+# troque por distância geodésica se DISTANCIA_M virar critério de método.
+METROS_POR_GRAU = 111320.0
 
-# Raio do círculo usado para endereços sem prédio (~5 m).
-POINT_BUFFER_DEG = 0.000045
+NAO_INFORMADO = "Não informado"
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS buildings (
-    id                  VARCHAR(64)  NOT NULL PRIMARY KEY,
-    geom                GEOMETRY     NOT NULL,
-    area_m2             DOUBLE       NULL,
-    tipo                VARCHAR(32)  NOT NULL DEFAULT 'desconhecido',
-    endereco            VARCHAR(255) NULL,
-    bairro              VARCHAR(128) NULL,
-    estabelecimento     VARCHAR(255) NULL,
-    num_pavimentos      INT          NULL,
-    fonte               VARCHAR(128) NULL,
-    SPATIAL INDEX idx_geom (geom)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-"""
+# Pais antes de filhos: ordem de carga (e inversa para apagar).
+TABELAS = [
+    "FONTES", "BAIRROS", "LOCALIDADES", "EDIFICACOES", "EDIFICACAO_ORIGEM",
+    "ENDERECOS", "ENDERECO_EDIFICACAO", "AGG_BAIRRO_TIPO",
+]
+
+GEO = f"ST_GeomFromGeoJSON(%s, 1, {SRID})"
 
 # COD_ESPECIE do QG (CNEFE/IBGE) -> tipo de uso. Códigos oficiais:
 # 1=domicílio particular, 2=domicílio coletivo, 3=agropecuário,
@@ -88,24 +83,6 @@ OVERTURE_CLASS_TO_TIPO = {
     "hotel": "hospedagem",
     "roof": "desconhecido",
 }
-
-
-def connect_db():
-    return pymysql.connect(
-        host=DB_HOST, port=DB_PORT, user=DB_USER, password=DB_PASSWORD, database=DB_NAME, charset="utf8mb4"
-    )
-
-
-def _area_m2(polygon) -> float:
-    """Área aproximada em m², projetando localmente ao redor do próprio prédio."""
-    cx, cy = polygon.centroid.x, polygon.centroid.y
-    kx = 111320.0 * math.cos(math.radians(cy))
-    ky = 110540.0
-
-    def _to_meters(lon, lat):
-        return (lon - cx) * kx, (lat - cy) * ky
-
-    return transform(_to_meters, polygon).area
 
 
 def load_buildings():
@@ -170,21 +147,37 @@ def load_qg_points():
     return fc["features"]
 
 
-def best_type(qg_props, overture_props):
+def classify(qg_props, overture_props):
+    """(tipo, ORIGEM_TIPO): CNEFE prevalece, depois subtype, depois class."""
     especie = (qg_props or {}).get("COD_ESPECIE")
     if especie in ESPECIE_TO_TIPO:
-        return ESPECIE_TO_TIPO[especie]
+        return ESPECIE_TO_TIPO[especie], "cnefe"
     subtype = (overture_props or {}).get("subtype")
     if subtype in OVAERTURE_SUBTYPE_TO_TIPO:
-        return OVAERTURE_SUBTYPE_TO_TIPO[subtype]
+        return OVAERTURE_SUBTYPE_TO_TIPO[subtype], "overture_subtype"
     cls = (overture_props or {}).get("class")
     if cls in OVERTURE_CLASS_TO_TIPO:
-        return OVERTURE_CLASS_TO_TIPO[cls]
-    return "desconhecido"
+        return OVERTURE_CLASS_TO_TIPO[cls], "overture_class"
+    return "desconhecido", "sem_dado"
+
+
+def best_type(qg_props, overture_props):
+    return classify(qg_props, overture_props)[0]
+
+
+def polygon_of(feat):
+    """Polígono válido do GeoJSON, ou None (o banco só aceita (MULTI)POLYGON)."""
+    g = shape(feat["geometry"])
+    if not g.is_valid:
+        g = g.buffer(0)
+    return g if g.geom_type in ("Polygon", "MultiPolygon") and not g.is_empty else None
 
 
 def match_points(polys, points, q_indices=None):
-    """Associa pontos a polígonos: contém → tolerância de ~15 m → mais próximo."""
+    """Associa pontos a polígonos: contém → tolerância de ~15 m → mais próximo.
+
+    Retorna {índice do ponto: (índice do polígono, METODO, DISTANCIA_M)}.
+    """
     tree = strtree.STRtree(polys)
     if q_indices is None:
         q_indices = range(len(points))
@@ -192,155 +185,253 @@ def match_points(polys, points, q_indices=None):
     for qi in q_indices:
         x, y = points[qi]["geometry"]["coordinates"]
         pt = Point(x, y)
-        hits = tree.query(pt, predicate="contains")
+        # predicate testa ponto→polígono: "within", não "contains".
+        hits = tree.query(pt, predicate="within")
+        metodo = "contido"
         if len(hits) == 0:
             hits = tree.query(pt.buffer(POINT_TOLERANCE_DEG), predicate="intersects")
+            metodo = "tolerancia"
         if len(hits) == 0:
             continue
         cands = [int(i) for i in hits]
         best = min(cands, key=lambda bi: pt.distance(polys[bi]))
-        point_to_poly[qi] = best
+        dist = 0.0 if metodo == "contido" else pt.distance(polys[best]) * METROS_POR_GRAU
+        point_to_poly[qi] = (best, metodo, round(dist, 2))
     return point_to_poly
 
 
-def relate_points_to_buildings(buildings, points):
-    polys = []
-    for b in buildings:
-        g = shape(b["geometry"])
-        if not g.is_valid:
-            g = g.buffer(0)
-        polys.append(g)
-
-    point_to_building = match_points(polys, points)
-    building_to_points = {}
-    for qi, bi in point_to_building.items():
-        building_to_points.setdefault(bi, []).append(qi)
-    return building_to_points, polys
+def fonte_principal(sources):
+    """(nome, licença, confiança) do 1º dataset Overture; OSM se não houver."""
+    s = dict(sources[0]) if sources else {}
+    return (s.get("dataset") or "OpenStreetMap", s.get("license") or "ODbL-1.0",
+            s.get("confidence"))
 
 
-def main():
+def montar_predios():
+    """Lê as fontes e devolve (predios, qg_features, assoc).
+
+    predios: dicts com geom, id_origem, fonte, licença, confiança, props.
+    assoc: {índice do endereço: (índice do prédio, METODO, DISTANCIA_M)}.
+    """
     print("Lendo edificações do Overture...")
-    building_features = load_buildings()
-    print(f"  {len(building_features)} prédios")
+    predios = []
+    for b in load_buildings():
+        g = polygon_of(b)
+        if g is None:
+            continue
+        props = dict(b["properties"])
+        sources = props.pop("sources", None) or []
+        nome, licenca, conf = fonte_principal(sources)
+        predios.append({"geom": g, "id_origem": b["id"], "fonte": nome,
+                        "licenca": licenca, "confianca": conf,
+                        "fontes": sources, "props": props,
+                        "num_pav": props.get("num_floors")})
+    n_overture = len(predios)
+    print(f"  {n_overture} prédios")
 
     print("Lendo endereços do QG...")
     qg_features = load_qg_points()
     print(f"  {len(qg_features)} pontos de endereço")
 
     print("Relacionando endereços x prédios (espacialmente)...")
-    building_to_points, polys = relate_points_to_buildings(building_features, qg_features)
-    point_to_building = {
-        qi: bi for bi, qis in building_to_points.items() for qi in qis
-    }
-    print(f"  {len(point_to_building)} endereços dentro de prédios")
+    assoc = match_points([p["geom"] for p in predios], qg_features) if predios else {}
+    print(f"  {len(assoc)} endereços dentro de prédios")
 
     print("2ª fonte (OSM) para os endereços restantes...")
-    osm_features = load_osm_buildings()
-    osm_polys = []
-    for b in osm_features:
-        g = shape(b["geometry"])
-        if not g.is_valid:
-            g = g.buffer(0)
-        osm_polys.append(g)
-    unmatched = [qi for qi in range(len(qg_features))
-                 if qi not in point_to_building]
-    osm_match = (match_points(osm_polys, qg_features, unmatched)
-                 if osm_polys else {})
-    print(f"  OSM: {len(osm_features)} polígonos, "
-          f"{len(osm_match)} endereços adotados")
+    osm = []
+    for i, o in enumerate(load_osm_buildings()):
+        g = polygon_of(o)
+        if g is None:
+            continue
+        tags = o["properties"] or {}
+        oid = str(tags.get("osm_id", i)).replace("/", "-")
+        osm.append({"geom": g, "id_origem": f"osm-{oid}", "fonte": "OpenStreetMap",
+                    "licenca": "ODbL-1.0", "confianca": None,
+                    "fontes": [{"dataset": "OpenStreetMap"}],
+                    "props": {**tags, "class": tags.get("building")},
+                    "num_pav": None})
+    unmatched = [qi for qi in range(len(qg_features)) if qi not in assoc]
+    osm_match = match_points([p["geom"] for p in osm], qg_features, unmatched) if osm else {}
+    for qi, (oi, metodo, dist) in osm_match.items():
+        assoc[qi] = (n_overture + oi, metodo, dist)
+    predios.extend(osm)
+    print(f"  OSM: {len(osm)} polígonos, {len(osm_match)} endereços adotados")
+    return predios, qg_features, assoc
 
-    print("Gravando no MySQL...")
-    conn = connect_db()
+
+def _num(v):
+    return int(v) if v not in (None, "") else None
+
+
+def gravar_stage(predios, qg_features, assoc):
+    """Recarrega todas as tabelas do banco de rascunho a partir do zero."""
+    arquivos = [p for p in OVERTURE_FILES + [OSM_BUILDINGS, MUNICIPIO_BOUNDARY, QG_ENDERECOS]
+                if os.path.exists(p)]
+    parametros = {"municipio": MUNICIPIO, "srid": SRID,
+                  "point_tolerance_deg": POINT_TOLERANCE_DEG}
+
+    # Bairro = DSC_LOCALIDADE do CNEFE (1:1) até haver malha oficial de bairros.
+    localidades = {}
+    for qf in qg_features:
+        nome = qf["properties"].get("DSC_LOCALIDADE") or NAO_INFORMADO
+        localidades.setdefault(nome, len(localidades) + 1)
+    fontes = {}
+    for p in predios:
+        fontes.setdefault(p["fonte"], (len(fontes) + 1, p["licenca"]))
+
+    tipos_do_predio = {}
+    bairros_do_predio = {}
+    for qi, (bi, _, _) in assoc.items():
+        qp = qg_features[qi]["properties"]
+        tipos_do_predio.setdefault(bi, []).append(classify(qp, None)[0])
+        bairros_do_predio.setdefault(bi, []).append(
+            localidades[qp.get("DSC_LOCALIDADE") or NAO_INFORMADO])
+
+    edificacoes, origens = [], []
+    for bi, p in enumerate(predios):
+        tipos = tipos_do_predio.get(bi)
+        if tipos:
+            tipo, origem = Counter(tipos).most_common(1)[0][0], "cnefe"
+            bairro_id = Counter(bairros_do_predio[bi]).most_common(1)[0][0]
+        else:
+            (tipo, origem), bairro_id = classify(None, p["props"]), None
+        edificacoes.append((
+            bi + 1, fontes[p["fonte"]][0], bairro_id, tipo, origem,
+            int(len(set(tipos or [])) > 1), len(tipos or []), _num(p["num_pav"]),
+            p["confianca"], json.dumps(mapping(p["geom"])),
+            json.dumps(mapping(p["geom"].representative_point())),
+        ))
+        origens.append((bi + 1, p["id_origem"],
+                        json.dumps(p["fontes"], ensure_ascii=False, default=str),
+                        json.dumps(p["props"], ensure_ascii=False, default=str)))
+
+    enderecos = []
+    for qi, qf in enumerate(qg_features):
+        qp = qf["properties"]
+        enderecos.append((
+            qi + 1, int(qp["COD_UNICO_ENDERECO"]), int(qp["COD_ESPECIE"]),
+            _num(qp.get("COD_TIPO_ESPECI")), qp["COD_SETOR"],
+            _num(qp.get("NUM_QUADRA")), _num(qp.get("NUM_FACE")), qp.get("CEP") or None,
+            localidades[qp.get("DSC_LOCALIDADE") or NAO_INFORMADO],
+            qp.get("LOGRAD_NUM") or "", qp.get("COMPLEMENTO") or None,
+            qp.get("DSC_ESTABELECIMENTO") or None, int(qp["NV_GEO_COORD"]),
+            json.dumps(qf["geometry"]),
+        ))
+    vinculos = [(qi + 1, bi + 1, metodo, dist) for qi, (bi, metodo, dist) in assoc.items()]
+
+    inserts = [
+        ("FONTES", "INSERT INTO FONTES (ID, NOME, LICENCA) VALUES (%s, %s, %s)",
+         [(i, n, lic) for n, (i, lic) in fontes.items()]),
+        ("BAIRROS", "INSERT INTO BAIRROS (ID, NOME) VALUES (%s, %s)",
+         [(i, n) for n, i in localidades.items()]),
+        ("LOCALIDADES", "INSERT INTO LOCALIDADES (ID, NOME, BAIRRO_ID) VALUES (%s, %s, %s)",
+         [(i, n, i) for n, i in localidades.items()]),
+        ("EDIFICACOES",
+         "INSERT INTO EDIFICACOES (ID, FONTE_ID, BAIRRO_ID, TIPO_USO, ORIGEM_TIPO, "
+         "USO_MISTO, N_ENDERECOS, NUM_PAVIMENTOS, CONFIANCA_FONTE, GEOM, PONTO_ROTULO) "
+         f"VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, {GEO}, {GEO})", edificacoes),
+        ("EDIFICACAO_ORIGEM",
+         "INSERT INTO EDIFICACAO_ORIGEM (EDIFICACAO_ID, ID_ORIGEM, FONTES, ATRIBUTOS) "
+         "VALUES (%s, %s, %s, %s)", origens),
+        ("ENDERECOS",
+         "INSERT INTO ENDERECOS (ID, COD_UNICO, COD_ESPECIE, COD_TIPO_ESPECI, COD_SETOR, "
+         "NUM_QUADRA, NUM_FACE, CEP, LOCALIDADE_ID, LOGRADOURO_NUM, COMPLEMENTO, "
+         "ESTABELECIMENTO, NV_GEO_COORD, PT) "
+         f"VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, {GEO})", enderecos),
+        ("ENDERECO_EDIFICACAO",
+         "INSERT INTO ENDERECO_EDIFICACAO (ENDERECO_ID, EDIFICACAO_ID, METODO, DISTANCIA_M) "
+         "VALUES (%s, %s, %s, %s)", vinculos),
+    ]
+
+    print(f"Gravando no banco de rascunho ({len(edificacoes)} prédios, "
+          f"{len(enderecos)} endereços)...")
+    conn = connect(DB_NAME_STAGE)
     try:
         with conn.cursor() as cur:
-            cur.execute("DROP TABLE IF EXISTS buildings")
-            cur.execute(SCHEMA)
-
-            codes = [str(q["properties"].get("COD_UNICO_ENDERECO")) for q in qg_features]
-            dupes = {c for c, n in Counter(codes).items() if n > 1}
-            seen = Counter()
-
-            def row_id(code):
-                if code not in dupes:
-                    return code
-                seen[code] += 1
-                return f"{code}#{seen[code]}"
-
-            def fonte_of(props):
-                sources = props.get("sources") or []
-                return "; ".join(dict(s).get("dataset", "?") for s in sources) or None
-
-            batch = []
-            for qi, qf in enumerate(qg_features):
-                qp = qf["properties"]
-                bi = point_to_building.get(qi)
-                if bi is not None:
-                    oprops = building_features[bi]["properties"]
-                    geom = polys[bi]
-                    num_pav = oprops.get("num_floors")
-                    fonte = fonte_of(oprops)
-                elif qi in osm_match:
-                    oi = osm_match[qi]
-                    otags = osm_features[oi]["properties"] or {}
-                    oprops = {"class": otags.get("building")}
-                    geom = osm_polys[oi]
-                    num_pav = None
-                    fonte = "OpenStreetMap"
-                else:
-                    oprops = {}
-                    x, y = qf["geometry"]["coordinates"]
-                    geom = Point(x, y).buffer(POINT_BUFFER_DEG)
-                    num_pav = None
-                    fonte = "QG/CNEFE"
-                batch.append((
-                    row_id(codes[qi]), json.dumps(mapping(geom)), _area_m2(geom),
-                    best_type(qp, oprops),
-                    qp.get("LOGRAD_NUM") or None, qp.get("DSC_LOCALIDADE") or None,
-                    qp.get("DSC_ESTABELECIMENTO") or None, num_pav, fonte,
-                ))
-
-            for bi, b in enumerate(building_features):
-                if bi in building_to_points:
-                    continue
-                props = b["properties"]
-                geom = polys[bi]
-                batch.append((
-                    b["id"], json.dumps(mapping(geom)), _area_m2(geom),
-                    best_type(None, props),
-                    None, None, None, props.get("num_floors"), fonte_of(props),
-                ))
-
-            osm_to_points = {}
-            for qi, oi in osm_match.items():
-                osm_to_points.setdefault(oi, []).append(qi)
-            for oi, o in enumerate(osm_features):
-                if oi in osm_to_points:
-                    continue
-                otags = o["properties"] or {}
-                oid = str(otags.get("osm_id", oi)).replace("/", "-")
-                batch.append((
-                    f"osm-{oid}", json.dumps(mapping(osm_polys[oi])),
-                    _area_m2(osm_polys[oi]),
-                    best_type(None, {"class": otags.get("building")}),
-                    None, None, None, None, "OpenStreetMap",
-                ))
-
-            # SRID 0 em toda a tabela (tudo em lon/lat).
-            sql = (
-                "INSERT INTO buildings "
-                "(id, geom, area_m2, tipo, endereco, bairro, estabelecimento, num_pavimentos, fonte) "
-                "VALUES (%s, ST_GeomFromGeoJSON(%s), %s, %s, %s, %s, %s, %s, %s)"
-            )
-            CHUNK = 500
-            for i in range(0, len(batch), CHUNK):
-                cur.executemany(sql, batch[i:i + CHUNK])
-            conn.commit()
-            cur.execute("SELECT COUNT(*), SUM(tipo='desconhecido') FROM buildings")
-            total, unknown = cur.fetchone()
-            print(f"  Inseridos {total} prédios em `buildings` "
-                  f"({unknown} sem tipo identificado = desconhecido)")
+            cur.execute("SET FOREIGN_KEY_CHECKS = 0")
+            for t in TABELAS + ["CARGAS"]:
+                cur.execute(f"TRUNCATE TABLE {t}")
+            cur.execute("SET FOREIGN_KEY_CHECKS = 1")
+            cur.execute("INSERT INTO CARGAS (PARAMETROS, ARQUIVOS) VALUES (%s, %s)",
+                        (json.dumps(parametros), json.dumps(arquivos)))
+            carga_id = cur.lastrowid
+            for tabela, sql, rows in inserts:
+                # pymysql só agrupa executemany com %s puros no VALUES; com
+                # ST_GeomFromGeoJSON(%s) seria 1 ida ao banco por linha.
+                head, tpl = sql.split(" VALUES ")
+                for i in range(0, len(rows), 500):
+                    chunk = rows[i:i + 500]
+                    cur.execute(f"{head} VALUES " + ",".join([tpl] * len(chunk)),
+                                [v for r in chunk for v in r])
+                print(f"  {tabela}: {len(rows)}")
+            cur.execute(
+                "INSERT INTO AGG_BAIRRO_TIPO (BAIRRO_NOME, TIPO_USO, N_EDIFICACOES, "
+                "N_ENDERECOS, AREA_SOMA_M2) "
+                "SELECT COALESCE(B.NOME, %s), E.TIPO_USO, COUNT(*), SUM(E.N_ENDERECOS), "
+                "COALESCE(SUM(E.AREA_M2), 0) FROM EDIFICACOES E "
+                "LEFT JOIN BAIRROS B ON B.ID = E.BAIRRO_ID GROUP BY 1, 2", (NAO_INFORMADO,))
+            contagens = {t: len(rows) for t, _, rows in inserts}
+            cur.execute("SELECT SUM(TIPO_USO = 'desconhecido') AS n FROM EDIFICACOES")
+            contagens["EDIFICACOES_DESCONHECIDO"] = int(cur.fetchone()["n"] or 0)
+            cur.execute("UPDATE CARGAS SET CONCLUIDA_EM = NOW(), CONTAGENS = %s WHERE ID = %s",
+                        (json.dumps(contagens), carga_id))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
+    print(f"  Carga concluída: {contagens}")
+
+
+def colunas_gravaveis(cur, tabela):
+    """Colunas não geradas (AREA_M2 e ENDERECOS.TIPO_USO são calculadas)."""
+    cur.execute(
+        "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = %s "
+        "AND TABLE_NAME = %s AND GENERATION_EXPRESSION = '' ORDER BY ORDINAL_POSITION",
+        (DB_NAME_STAGE, tabela))
+    return ", ".join(r["COLUMN_NAME"] for r in cur.fetchall())
+
+
+def promover():
+    """Substitui os dados de produção pelos do rascunho, tudo ou nada."""
+    stage = f"`{DB_NAME_STAGE}`"
+    conn = connect(DB_NAME)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) AS n FROM {stage}.EDIFICACOES")
+            n = cur.fetchone()["n"]
+            cur.execute(f"SELECT COUNT(*) AS n FROM {stage}.CARGAS WHERE CONCLUIDA_EM IS NOT NULL")
+            if not n or not cur.fetchone()["n"]:
+                raise SystemExit("Rascunho vazio ou carga incompleta: produção intacta.")
+            print(f"Promovendo {n} prédios do rascunho para produção...")
+            for t in reversed(TABELAS):
+                cur.execute(f"DELETE FROM {t}")
+            for t in TABELAS:
+                cols = colunas_gravaveis(cur, t)
+                cur.execute(f"INSERT INTO {t} ({cols}) SELECT {cols} FROM {stage}.{t}")
+            # Produção guarda o histórico de cargas; o ID é o dela.
+            cols = "INICIADA_EM, CONCLUIDA_EM, PARAMETROS, ARQUIVOS, CONTAGENS"
+            cur.execute(f"INSERT INTO CARGAS ({cols}) SELECT {cols} FROM {stage}.CARGAS")
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    print("  Produção atualizada.")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--promover", action="store_true",
+                    help="após carregar o rascunho, substitui os dados de produção")
+    args = ap.parse_args()
+    if not (DB_NAME and DB_NAME_STAGE) or DB_NAME == DB_NAME_STAGE:
+        raise SystemExit("DB_NAME e DB_NAME_STAGE ausentes ou iguais: use doppler run --")
+    gravar_stage(*montar_predios())
+    if args.promover:
+        promover()
     print("Done.")
 
 
