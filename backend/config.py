@@ -12,7 +12,7 @@ DB_NAME_STAGE = os.getenv("DB_NAME_STAGE")  # ATLAS_STAGE: rascunho da importaç
 # SIRGAS 2000 geográfico: SRID das colunas GEOM, PONTO_ROTULO e PT.
 SRID = 4674
 
-# JWT do login. Fallback para testes/dev; em produção cadastre via Doppler.
-JWT_SECRET = os.getenv("JWT_SECRET", "atlas-urbano-dev-32-bytes-minimo!")
+# JWT do login.
+JWT_SECRET = os.getenv("JWT_SECRET")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "480"))
