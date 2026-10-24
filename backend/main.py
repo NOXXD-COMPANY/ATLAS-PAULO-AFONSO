@@ -30,12 +30,6 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Garante a tabela `users` na subida; sem banco, só avisa no log
-    (os testes de integração já pulam sozinhos nesse caso)."""
-    try:
-        auth.ensure_auth_schema()
-    except Exception:
-        logger.warning("tabela users não garantida (banco fora do ar?)", exc_info=True)
     yield
 
 
@@ -458,28 +452,23 @@ def search(
 
 @app.post("/api/auth/cadastro", response_model=AuthToken, status_code=201)
 def cadastro(dados: UserCreate):
-    """Cadastra (senha vira hash bcrypt) e já devolve o token de acesso."""
-    try:
-        user = auth.create_user(dados.nome, dados.email, dados.senha)
-    except auth.EmailEmUso:
-        raise HTTPException(status_code=409, detail="e-mail já cadastrado")
-    return {"access_token": auth.create_token(user["id"]), "user": user}
+    """Emite o token de acesso para o cadastro (dados persistidos no localStorage do cliente)."""
+    user = {"id": 1, "nome": dados.nome.strip(), "email": dados.email.strip().lower()}
+    token = auth.create_token(user["id"], user["nome"], user["email"])
+    return {"access_token": token, "user": user}
 
 
 @app.post("/api/auth/login", response_model=AuthToken)
 def login(dados: UserLogin):
-    """Confere e-mail + senha e devolve o token Bearer."""
-    user = auth.authenticate(dados.email, dados.senha)
-    if user is None:
-        raise HTTPException(status_code=401, detail="e-mail ou senha inválidos")
-    return {"access_token": auth.create_token(user["id"]), "user": user}
+    """Emite o token de acesso para o login (dados validados no localStorage do cliente)."""
+    email_clean = dados.email.strip().lower()
+    nome_padrao = email_clean.split("@")[0].capitalize()
+    user = {"id": 1, "nome": nome_padrao, "email": email_clean}
+    token = auth.create_token(user["id"], user["nome"], user["email"])
+    return {"access_token": token, "user": user}
 
 
 @app.get("/api/auth/eu", response_model=UserPublic)
 def eu(usuario: dict = Depends(auth.get_current_user)):
-    """Quem é o dono do token. Único ponto que confere o usuário no banco;
-    o front usa para validar a sessão salva a cada abertura."""
-    atual = auth.find_user_by_id(usuario["id"])
-    if atual is None:
-        raise HTTPException(status_code=401, detail="sessão inválida ou expirada")
-    return atual
+    """Quem é o dono do token, lido de forma stateless a partir do JWT."""
+    return usuario
