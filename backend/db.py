@@ -8,7 +8,7 @@ from contextlib import contextmanager
 import pymysql
 import shapely
 
-from .config import DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME, SRID
+from .config import DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME, DB_SSL_CA, SRID
 
 FROM_EDIFICACOES = (
     "FROM EDIFICACOES E JOIN FONTES F ON F.ID = E.FONTE_ID "
@@ -116,8 +116,8 @@ def build_where(bbox=None, bairros=None, tipo=None, fonte=None):
     return ("WHERE " + " AND ".join(clauses), params)
 
 
-def connect(database=DB_NAME):
-    return pymysql.connect(
+def connect(database=DB_NAME, autocommit=True):
+    kwargs = dict(
         host=DB_HOST,
         port=DB_PORT,
         user=DB_USER,
@@ -127,8 +127,11 @@ def connect(database=DB_NAME):
         cursorclass=pymysql.cursors.DictCursor,
         # Sem transação aberta entre pedidos: uma conexão reaproveitada
         # precisa enxergar uma reimportação feita depois.
-        autocommit=True,
+        autocommit=autocommit,
     )
+    if DB_SSL_CA:
+        kwargs["ssl"] = {"ca": DB_SSL_CA}
+    return pymysql.connect(**kwargs)
 
 
 _idle_connections = queue.LifoQueue(maxsize=8)
@@ -298,12 +301,12 @@ def fetch_building_addresses(building_id):
 
 
 def fetch_data_version():
-    """Muda a cada importação: o import_data.py recria a tabela."""
+    """Muda a cada importação com base no término da última carga concluída."""
     with connection() as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT UNIX_TIMESTAMP(CREATE_TIME) AS created "
-            "FROM information_schema.TABLES "
-            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'EDIFICACOES'"
+            "SELECT UNIX_TIMESTAMP(CONCLUIDA_EM) AS created "
+            "FROM CARGAS WHERE CONCLUIDA_EM IS NOT NULL "
+            "ORDER BY ID DESC LIMIT 1"
         )
         row = cur.fetchone()
     return str(int(row["created"])) if row and row["created"] is not None else "0"

@@ -345,7 +345,7 @@ def gravar_stage(predios, qg_features, assoc):
 
     print(f"Gravando no banco de rascunho ({len(edificacoes)} prédios, "
           f"{len(enderecos)} endereços)...")
-    conn = connect(DB_NAME_STAGE)
+    conn = connect(DB_NAME_STAGE, autocommit=False)
     try:
         with conn.cursor() as cur:
             cur.execute("SET FOREIGN_KEY_CHECKS = 0")
@@ -396,7 +396,7 @@ def colunas_gravaveis(cur, tabela):
 def promover():
     """Substitui os dados de produção pelos do rascunho, tudo ou nada."""
     stage = f"`{DB_NAME_STAGE}`"
-    conn = connect(DB_NAME)
+    conn = connect(DB_NAME, autocommit=False)
     try:
         with conn.cursor() as cur:
             cur.execute(f"SELECT COUNT(*) AS n FROM {stage}.EDIFICACOES")

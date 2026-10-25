@@ -8,6 +8,7 @@ DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
 DB_NAME = os.getenv("DB_NAME")              # ATLAS: produção, lido pela API
 DB_NAME_STAGE = os.getenv("DB_NAME_STAGE")  # ATLAS_STAGE: rascunho da importação
+DB_SSL_CA = os.getenv("DB_SSL_CA")          # Caminho do CA (ex: ca.pem da Aiven)
 
 # SIRGAS 2000 geográfico: SRID das colunas GEOM, PONTO_ROTULO e PT.
 SRID = 4674
