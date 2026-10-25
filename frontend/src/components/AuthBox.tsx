@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import type { Theme } from '../constants';
 import { Icon } from './Icon';
-import { autenticarContaLocal, cadastrarContaLocal } from '../session';
 
 export type AuthUser = { id: number; nome: string; email: string };
 
@@ -21,6 +20,7 @@ async function postAuth(apiUrl: string, rota: 'login' | 'cadastro', body: { nome
     body: JSON.stringify(body),
   });
   const data = await response.json().catch(() => ({}));
+  // O Pydantic pode devolver string ou lista em `detail`.
   if (!response.ok) {
     const detail = Array.isArray(data.detail) ? data.detail[0]?.msg : data.detail;
     throw new Error(detail ?? `HTTP ${response.status}`);
@@ -57,15 +57,9 @@ export function AuthBox({ apiUrl, user, onAuth, onLogout }: Props) {
     setCarregando(true);
     setErro(null);
     try {
-      if (modo === 'cadastro') {
-        const usuarioLocal = cadastrarContaLocal(nome, email, senha);
-        const resposta = await postAuth(apiUrl, 'cadastro', { nome: usuarioLocal.nome, email: usuarioLocal.email, senha });
-        onAuth(resposta.access_token, usuarioLocal);
-      } else {
-        const usuarioLocal = autenticarContaLocal(email, senha);
-        const resposta = await postAuth(apiUrl, 'login', { nome: usuarioLocal.nome, email: usuarioLocal.email, senha });
-        onAuth(resposta.access_token, usuarioLocal);
-      }
+      const body = modo === 'cadastro' ? { nome, email, senha } : { email, senha };
+      const resposta = await postAuth(apiUrl, modo, body);
+      onAuth(resposta.access_token, resposta.user);
     } catch (e) {
       const mensagem = e instanceof Error ? e.message : 'Não foi possível agora.';
       setErro(MENSAGENS[mensagem] ?? mensagem);
@@ -99,7 +93,7 @@ export function AuthBox({ apiUrl, user, onAuth, onLogout }: Props) {
             onChange={(e) => setNome(e.target.value)}
             required
             minLength={2}
-            maxLength={128}
+            maxLength={100}
           />
         )}
         <input

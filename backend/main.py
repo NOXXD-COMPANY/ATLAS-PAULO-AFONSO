@@ -452,23 +452,28 @@ def search(
 
 @app.post("/api/auth/cadastro", response_model=AuthToken, status_code=201)
 def cadastro(dados: UserCreate):
-    """Emite o token de acesso para o cadastro (dados persistidos no localStorage do cliente)."""
-    user = {"id": 1, "nome": dados.nome.strip(), "email": dados.email.strip().lower()}
-    token = auth.create_token(user["id"], user["nome"], user["email"])
-    return {"access_token": token, "user": user}
+    """Cadastra (senha vira hash bcrypt) e já devolve o token de acesso."""
+    try:
+        user = auth.create_user(dados.nome, dados.email, dados.senha)
+    except auth.EmailEmUso:
+        raise HTTPException(status_code=409, detail="e-mail já cadastrado")
+    return {"access_token": auth.create_token(user["id"]), "user": user}
 
 
 @app.post("/api/auth/login", response_model=AuthToken)
 def login(dados: UserLogin):
-    """Emite o token de acesso para o login (dados validados no localStorage do cliente)."""
-    email_clean = dados.email.strip().lower()
-    nome_padrao = email_clean.split("@")[0].capitalize()
-    user = {"id": 1, "nome": nome_padrao, "email": email_clean}
-    token = auth.create_token(user["id"], user["nome"], user["email"])
-    return {"access_token": token, "user": user}
+    """Confere e-mail + senha e devolve o token Bearer."""
+    user = auth.authenticate(dados.email, dados.senha)
+    if user is None:
+        raise HTTPException(status_code=401, detail="e-mail ou senha inválidos")
+    return {"access_token": auth.create_token(user["id"]), "user": user}
 
 
 @app.get("/api/auth/eu", response_model=UserPublic)
 def eu(usuario: dict = Depends(auth.get_current_user)):
-    """Quem é o dono do token, lido de forma stateless a partir do JWT."""
-    return usuario
+    """Quem é o dono do token. Único ponto que confere o usuário no banco;
+    o front usa para validar a sessão salva a cada abertura."""
+    atual = auth.find_user_by_id(usuario["id"])
+    if atual is None:
+        raise HTTPException(status_code=401, detail="sessão inválida ou expirada")
+    return atual

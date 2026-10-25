@@ -244,7 +244,7 @@ Visual em "vidro líquido", à maneira do Liquid Glass da Apple: painéis transl
 | `GET /api/buildings/{building_id}` | Uma edificação (campos completos) como `Feature` GeoJSON, com `enderecos`: todos os endereços que dividem o mesmo footprint | 200, 404 |
 | `GET /api/stats` | Agregados (`total`, `by_tipo`, `by_bairro`, `area_total_m2`, `area_media_m2`) com os mesmos filtros | 200, 422 |
 | `GET /api/search?q=` | Busca para a barra do mapa: prédios (endereço, estabelecimento) e bairros, com um ponto para centralizar. Ignora acento e caixa | 200, 422 |
-| `POST /api/auth/cadastro` | Cadastro: nome, e-mail e senha; grava hash bcrypt na tabela `users` e já devolve o token Bearer | 201, 409, 422 |
+| `POST /api/auth/cadastro` | Cadastro: nome, e-mail e senha; grava hash bcrypt na tabela `USUARIOS` e já devolve o token Bearer | 201, 409, 422 |
 | `POST /api/auth/login` | Login: confere e-mail + senha e devolve o token Bearer (JWT HS256, expira em `JWT_EXPIRE_MINUTES`, padrão 8 h) | 200, 401, 422 |
 | `GET /api/auth/eu` | Dono do token (o front usa para revalidar a sessão salva) | 200, 401 |
 
