@@ -27,3 +27,6 @@ frontend/dist/
 
 # Documentos
 MATEMATICA.md
+
+# Cloudflare Wrangler
+.wrangler/
