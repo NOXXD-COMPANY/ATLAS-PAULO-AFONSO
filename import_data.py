@@ -11,7 +11,9 @@ import json
 import os
 from collections import Counter
 
-from shapely.geometry import Point, shape, mapping
+import numpy as np
+import shapely
+from shapely.geometry import shape, mapping
 from shapely import strtree
 
 from backend.config import DB_NAME, DB_NAME_STAGE, SRID
@@ -179,24 +181,22 @@ def match_points(polys, points, q_indices=None):
     Retorna {índice do ponto: (índice do polígono, METODO, DISTANCIA_M)}.
     """
     tree = strtree.STRtree(polys)
-    if q_indices is None:
-        q_indices = range(len(points))
+    q_indices = np.arange(len(points)) if q_indices is None else np.asarray(q_indices, dtype=int)
+    if len(q_indices) == 0:
+        return {}
+    pts = shapely.points([points[qi]["geometry"]["coordinates"][:2] for qi in q_indices])
     point_to_poly = {}
-    for qi in q_indices:
-        x, y = points[qi]["geometry"]["coordinates"]
-        pt = Point(x, y)
-        # predicate testa ponto→polígono: "within", não "contains".
-        hits = tree.query(pt, predicate="within")
-        metodo = "contido"
-        if len(hits) == 0:
-            hits = tree.query(pt.buffer(POINT_TOLERANCE_DEG), predicate="intersects")
-            metodo = "tolerancia"
-        if len(hits) == 0:
-            continue
-        cands = [int(i) for i in hits]
-        best = min(cands, key=lambda bi: pt.distance(polys[bi]))
-        dist = 0.0 if metodo == "contido" else pt.distance(polys[best]) * METROS_POR_GRAU
-        point_to_poly[qi] = (best, metodo, round(dist, 2))
+    # Vetorizado (GEOS em C). predicate testa ponto→polígono: "within", não "contains".
+    pi, gi = tree.query(pts, predicate="within")
+    inside, first = np.unique(pi, return_index=True)
+    for p, k in zip(inside, first):
+        point_to_poly[int(q_indices[p])] = (int(gi[k]), "contido", 0.0)
+    rest = np.setdiff1d(np.arange(len(pts)), inside)
+    (ri, gi), dist = tree.query_nearest(pts[rest], max_distance=POINT_TOLERANCE_DEG,
+                                        return_distance=True, all_matches=False)
+    for r, g, d in zip(ri, gi, dist):
+        point_to_poly[int(q_indices[rest[r]])] = (int(g), "tolerancia",
+                                                  round(float(d) * METROS_POR_GRAU, 2))
     return point_to_poly
 
 
@@ -250,6 +250,14 @@ def montar_predios():
                     "fontes": [{"dataset": "OpenStreetMap"}],
                     "props": {**tags, "class": tags.get("building")},
                     "num_pav": None})
+    # Fallback só onde o Overture não tem polígono: o Overture já inclui
+    # prédios derivados do OSM, e inseri-los de novo duplicaria footprints.
+    if osm and predios:
+        overlap = set(strtree.STRtree([p["geom"] for p in predios]).query(
+            [o["geom"] for o in osm], predicate="intersects")[0].tolist())
+        before = len(osm)
+        osm = [o for i, o in enumerate(osm) if i not in overlap]
+        print(f"  OSM: {before - len(osm)} descartados por sobrepor o Overture")
     unmatched = [qi for qi in range(len(qg_features)) if qi not in assoc]
     osm_match = match_points([p["geom"] for p in osm], qg_features, unmatched) if osm else {}
     for qi, (oi, metodo, dist) in osm_match.items():

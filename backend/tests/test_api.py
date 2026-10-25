@@ -139,6 +139,26 @@ def test_match_points_metodo_e_distancia():
     assert 2 not in m
 
 
+def test_osm_so_entra_onde_overture_nao_tem_poligono(monkeypatch):
+    import import_data
+    from shapely.geometry import box, mapping
+
+    def feat(fid, g):
+        return {"id": fid, "geometry": mapping(g), "properties": {}}
+    monkeypatch.setattr(import_data, "load_buildings", lambda: [feat("ov", box(0, 0, 0.001, 0.001))])
+    monkeypatch.setattr(import_data, "load_osm_buildings", lambda: [
+        feat("dup", box(0.0002, 0.0002, 0.0008, 0.0008)),  # dentro do Overture
+        feat("novo", box(0.01, 0.01, 0.011, 0.011)),
+    ])
+    monkeypatch.setattr(import_data, "load_qg_points", lambda: [
+        {"geometry": {"coordinates": [0.0005, 0.0005]}, "properties": {}},
+        {"geometry": {"coordinates": [0.0105, 0.0105]}, "properties": {}},
+    ])
+    predios, _, assoc = import_data.montar_predios()
+    assert [p["id_origem"] for p in predios] == ["ov", "osm-1"]
+    assert assoc == {0: (0, "contido", 0.0), 1: (1, "contido", 0.0)}
+
+
 # --- Endpoints principais (db mockado: sem banco) ---------------------------
 
 @pytest.fixture()

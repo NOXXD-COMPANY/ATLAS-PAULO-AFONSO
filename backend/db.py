@@ -23,9 +23,9 @@ _DO_PRIMEIRO_ENDERECO = (
     "ORDER BY EN.ID LIMIT 1)"
 )
 
-# Identifica footprints iguais (defensivo; na tabela normalizada cada
-# EDIFICACAO já é única).
-GEOMETRY_KEY = "SHA1(ST_AsBinary(E.GEOM)) AS geometry_key"
+# Identifica o footprint. Cada EDIFICACAO já é única (medido: 55.255 linhas,
+# 55.255 geometrias distintas), então o ID basta e evita SHA1 por linha.
+GEOMETRY_KEY = "CAST(E.ID AS CHAR) AS geometry_key"
 
 SELECT_FIELDS = (
     f"CAST(E.ID AS CHAR) AS id, ST_AsGeoJSON(E.GEOM) AS geojson, {GEOMETRY_KEY}, "
