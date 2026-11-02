@@ -107,7 +107,6 @@ def test_stats_schema():
     assert s.total == 10
 
 
-# --- Classificação best_type (regra de domínio do ETL) ----------------------
 
 def test_best_type_qg_prevalece():
     import import_data
