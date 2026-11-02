@@ -52,7 +52,7 @@ O projeto integra as fontes: cada ponto de endereço é associado, por relação
 ```
 dados abertos: Overture + OSM (polígonos) · QG/CNEFE (endereços)
         ↓
-    ETL em Python (import_data.py)
+    ETL em Python (import_data.py → pacote importacao/)
         ↓
     MariaDB/MySQL (tabela espacial `buildings`)
         ↓
@@ -109,6 +109,8 @@ A pasta `data/raw/` está no `.gitignore`, então **quem clona o repositório pr
 | Contorno do município | `data/raw/municipio_boundary.geojson` | A documentar (origem) |
 | OSM (opcional) | `data/raw/osm/osm_buildings_paulo_afonso.geojson` | `scripts/fetch_osm_buildings.py` |
 
+Os caminhos lidos pela carga ficam em `importacao/config.py` (`OVERTURE_FILES`, `OSM_BUILDINGS`, `MUNICIPIO_BOUNDARY` e `QG_ENDERECOS`). Se algum arquivo tiver outro nome ou estiver em outra pasta, ajuste lá. Os caminhos são relativos: rode a carga sempre a partir da raiz do repositório.
+
 ## Como rodar
 
 Pré-requisitos: **Python 3.10 ou superior** (a API usa a sintaxe `str | None`), Node.js, e o `mariadb`/`mariadbd` do sistema já instalados (não precisa rodar o MariaDB como serviço, pois o script sobe uma instância local). Os arquivos de dados brutos devem estar em `data/raw/` (ver acima).
@@ -134,10 +136,13 @@ Ou passo a passo:
 ./.venv/bin/python scripts/fetch_osm_buildings.py
 
 bash scripts/db.sh start            # sobe o MariaDB local (:3307, db atlas_urbano)
-./.venv/bin/python import_data.py   # importa e relaciona os dados
+doppler run -- ./.venv/bin/python import_data.py             # importa para o banco de rascunho
+doppler run -- ./.venv/bin/python import_data.py --promover  # idem e, em seguida, copia para produção
 ./.venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8000 &
 cd frontend && npm run dev -- --port 5173 &
 ```
+
+A carga grava primeiro no banco de rascunho (`DB_NAME_STAGE`). Só com `--promover` os dados são copiados para produção (`DB_NAME`), numa única transação: se algo falhar, a produção fica como estava. Sem as variáveis `DB_NAME` e `DB_NAME_STAGE` definidas e diferentes entre si, a carga aborta; por isso o comando usa `doppler run --`.
 
 Abra **http://127.0.0.1:5173/**. Para parar o banco: `bash scripts/db.sh stop`.
 
@@ -153,9 +158,9 @@ Abra **http://127.0.0.1:5173/**. Para parar o banco: `bash scripts/db.sh stop`.
 
 **Configuração**
 
-- Banco (backend): `backend/config.py` (lê `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` e `DB_SSL_CA` do ambiente; sem `DB_SSL_CA`, conecta sem TLS como no ambiente local).
+- Banco (backend): `backend/config.py` (lê `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` e `DB_SSL_CA` do ambiente; sem `DB_SSL_CA`, conecta sem TLS como no ambiente local). O mesmo arquivo expõe `DB_NAME_STAGE`, o banco de rascunho usado pela carga.
 - Auth: `JWT_SECRET` (obrigatório em produção) e `JWT_EXPIRE_MINUTES` (padrão 480) no ambiente; o front manda `Authorization: Bearer` em toda rota `/api`.
-- Banco (carga): constantes no topo de `import_data.py`. **Atenção:** hoje elas apontam para uma instância diferente da que o `db.sh` sobe (porta e usuário distintos), e a credencial está escrita no arquivo. Alinhar com `config.py` e mover para variáveis de ambiente (ver [Limitações conhecidas](#limitações-conhecidas)).
+- Banco (carga): `import_data.py` usa `DB_NAME` e `DB_NAME_STAGE` de `backend/config.py` e a função `connect` de `backend/db.py`; não guarda usuário nem senha. Os caminhos dos dados, a tolerância espacial e a lista de tabelas ficam em `importacao/config.py`.
 - Frontend: a variável `VITE_API_URL` define o endereço da API (padrão `http://127.0.0.1:8000`).
 - CORS: o backend aceita apenas `localhost:5173` e `127.0.0.1:5173`.
 
@@ -177,7 +182,16 @@ Arquitetura em **camadas**, com um módulo de carga em lote separado da aplicaç
 **Componentes**
 
 - **Coleta (`scripts/fetch_osm_buildings.py`)**: divide o município numa grade 6×6, consulta o Overpass célula a célula (com pausa de 8 s entre consultas), refaz em quadrantes menores o que falhar e grava um GeoJSON.
-- **Carga (`import_data.py`)**: `load_buildings` (une e recorta o Overture), `load_osm_buildings`, `load_qg_points`, `match_points` e `relate_points_to_buildings` (junção espacial), `best_type` (cascata de classificação) e `main` (recria a tabela e insere em lotes de 500).
+- **Carga (`import_data.py` + pacote `importacao/`)**: `import_data.py` só chama `importacao.cli.main`. Os módulos:
+  - `fontes.py`: `load_buildings` (une os arquivos do Overture sem repetir IDs e recorta no município), `load_osm_buildings`, `load_qg_points`;
+  - `espacial.py`: `polygon_of` (polígono válido) e `match_points` (junção espacial: contém → tolerância de ~15 m);
+  - `predios.py`: `montar_predios` (Overture, depois OSM nos endereços restantes, descartando polígonos do OSM que intersectam o Overture);
+  - `classificacao.py`: `classify` e `best_type` (cascata de classificação do tipo de uso);
+  - `registros.py`: converte o resultado em linhas para `INSERT`, sem acessar o banco;
+  - `banco.py`: `transacao`, com commit ao sair e rollback em qualquer erro;
+  - `stage.py`: `gravar_stage` recarrega o banco de rascunho do zero, em lotes de 500 linhas;
+  - `producao.py`: `promover` copia o rascunho para produção numa transação;
+  - `cli.py`: argumento `--promover` e validação de `DB_NAME` / `DB_NAME_STAGE`.
 - **Backend**:
   - `main.py`: rotas, GZip e CORS; versão do mapa (`/api/map/meta`), grades (`/api/map/overview`) e geração dos tiles vetoriais (`/api/tiles`), com pré-aquecimento em segundo plano;
   - `overview.py`: grade de densidade da visão afastada (contagem por tipo e uso predominante por célula);
@@ -247,11 +261,11 @@ Visual em "vidro líquido", à maneira do Liquid Glass da Apple: painéis transl
 | `POST /api/auth/cadastro` | Cadastro: nome, e-mail e senha; grava hash bcrypt na tabela `USUARIOS` e já devolve o token Bearer | 201, 409, 422 |
 | `POST /api/auth/login` | Login: confere e-mail + senha e devolve o token Bearer (JWT HS256, expira em `JWT_EXPIRE_MINUTES`, padrão 8 h) | 200, 401, 422 |
 | `GET /api/auth/eu` | Dono do token (o front usa para revalidar a sessão salva) | 200, 401 |
-
-Toda rota `/api` (exceto `/`, `/api/auth/cadastro` e `/api/auth/login`) exige `Authorization: Bearer <token>` e devolve 401 sem token válido. O front abre numa tela de login sem saída e revalida a sessão em `/api/auth/eu` a cada abertura.
 | `GET /api/map/meta` | Versão dos dados (entra nas URLs do mapa) e a área com prédios | 200 |
 | `GET /api/map/overview?level=` | Grade de densidade da visão afastada (GeoJSON); `level=0` ~175 m, `level=1` ~88 m | 200, 422 |
 | `GET /api/tiles/{z}/{x}/{y}.pbf?v=` | Tiles vetoriais (MVT) do mapa: pontos dos prédios pequenos nos zooms 12 a 14 (camada `dots`) e polígonos (camada `buildings`): os grandes desde o 12, todos a partir do 14 | 200, 404 |
+
+Toda rota `/api` (exceto `/`, `/api/auth/cadastro` e `/api/auth/login`) exige `Authorization: Bearer <token>` e devolve 401 sem token válido. O front abre numa tela de login sem saída e revalida a sessão em `/api/auth/eu` a cada abertura.
 
 **Parâmetros de `GET /api/buildings`** (os filtros também valem para `/api/stats`, exceto `light`, `limit` e `offset`):
 
@@ -296,6 +310,22 @@ buildings(id, geom, area_m2, tipo, endereco, bairro,
 
 Todas as geometrias estão em **SRID 0** (coordenadas lon/lat sem sistema de referência declarado), o que limita o uso de funções geográficas nativas do banco. Há um `SPATIAL INDEX` em `geom`, usado pelo filtro `bbox`.
 
+### Tabelas gravadas pela carga atual
+
+A carga (`importacao/stage.py`) grava as tabelas abaixo no banco de rascunho e `promover` as copia para produção. As colunas vêm dos `INSERT` da carga; tipos, chaves e índices estão no esquema do banco, não aqui. A descrição de `buildings` acima não foi revalidada contra estas tabelas.
+
+| Tabela | Colunas gravadas | Observação |
+| --- | --- | --- |
+| `FONTES` | `ID`, `NOME`, `LICENCA` | Dataset de origem do polígono e sua licença |
+| `BAIRROS` | `ID`, `NOME` | Bairro = `DSC_LOCALIDADE` do CNEFE (1:1) até haver malha oficial de bairros |
+| `LOCALIDADES` | `ID`, `NOME`, `BAIRRO_ID` | Hoje `BAIRRO_ID` é igual ao `ID` |
+| `EDIFICACOES` | `ID`, `FONTE_ID`, `BAIRRO_ID`, `TIPO_USO`, `ORIGEM_TIPO`, `USO_MISTO`, `N_ENDERECOS`, `NUM_PAVIMENTOS`, `CONFIANCA_FONTE`, `GEOM`, `PONTO_ROTULO` | `AREA_M2` é coluna calculada pelo banco. `ORIGEM_TIPO`: `cnefe`, `overture_subtype`, `overture_class` ou `sem_dado`. `USO_MISTO` = 1 se os endereços do prédio têm tipos diferentes; o tipo do prédio é o mais frequente entre eles |
+| `EDIFICACAO_ORIGEM` | `EDIFICACAO_ID`, `ID_ORIGEM`, `FONTES`, `ATRIBUTOS` | ID e atributos originais do Overture/OSM |
+| `ENDERECOS` | `ID`, `COD_UNICO`, `COD_ESPECIE`, `COD_TIPO_ESPECI`, `COD_SETOR`, `NUM_QUADRA`, `NUM_FACE`, `CEP`, `LOCALIDADE_ID`, `LOGRADOURO_NUM`, `COMPLEMENTO`, `ESTABELECIMENTO`, `NV_GEO_COORD`, `PT` | `TIPO_USO` é coluna calculada pelo banco |
+| `ENDERECO_EDIFICACAO` | `ENDERECO_ID`, `EDIFICACAO_ID`, `METODO`, `DISTANCIA_M` | Relação endereço × edificação. `METODO`: `contido` ou `tolerancia` |
+| `AGG_BAIRRO_TIPO` | `BAIRRO_NOME`, `TIPO_USO`, `N_EDIFICACOES`, `N_ENDERECOS`, `AREA_SOMA_M2` | Calculada no banco ao fim da carga, por bairro e tipo |
+| `CARGAS` | `ID`, `INICIADA_EM`, `CONCLUIDA_EM`, `PARAMETROS`, `ARQUIVOS`, `CONTAGENS` | Histórico: parâmetros, arquivos usados e contagens de cada carga. A promoção só aceita um rascunho com carga concluída |
+
 ### Modelo-alvo (documentação)
 
 A documentação define um modelo normalizado, a ser adotado nas próximas etapas:
@@ -338,10 +368,12 @@ Suíte em `backend/tests/test_api.py`, em níveis:
 | Regra de domínio | `best_type` do ETL (o QG prevalece sobre o Overture) |
 | Endpoints | Com o banco simulado (`monkeypatch`): os filtros chegam à camada de dados, `bbox` inválido devolve 422 e id inexistente devolve 404 |
 | Integração | Contra o MariaDB real; **pulados automaticamente** se o banco estiver fora do ar |
+| Carga (ETL) | Em `importacao/tests/`: classificação, junção espacial, leitura e recorte, montagem dos registros, gravação do rascunho e promoção. Usam arquivos temporários e um banco simulado, sem MySQL |
 
 ```bash
 ./.venv/bin/pip install pytest httpx      # dependências de desenvolvimento
 ./.venv/bin/python -m pytest backend/tests -q   # rodar da raiz do projeto
+./.venv/bin/python -m pytest importacao/tests -q # testes da carga, também da raiz
 ```
 
 Os testes de integração de cobertura assumem os números da carga atual (87.951 registros) e precisam ser atualizados quando os dados mudarem.
@@ -395,8 +427,8 @@ Atores: **Cliente** (consulta mapa e relatórios) e **Equipe Mantenedora** (carg
 | Filtrar por bairro | Cliente | Implementado (no relatório) |
 | Consultar dados agregados por bairro/setor | Cliente | Parcial (bairro sim; setor não) |
 | Emitir relatório estatístico | Cliente | Implementado (exporta PDF pelo navegador) |
-| Carregar a base de edificações e endereços | Equipe Mantenedora | Implementado (`import_data.py`, mais `fetch_osm_buildings.py` para a 2ª fonte) |
-| Cruzar endereços × telhados | Equipe Mantenedora | Implementado (`relate_points_to_buildings` e `match_points`) |
+| Carregar a base de edificações e endereços | Equipe Mantenedora | Implementado (`import_data.py` e o pacote `importacao/`, mais `fetch_osm_buildings.py` para a 2ª fonte) |
+| Cruzar endereços × telhados | Equipe Mantenedora | Implementado (`montar_predios` e `match_points`, no pacote `importacao/`) |
 | Gerar fila de conferência de campo | Equipe Mantenedora | Planejado |
 
 ## Decisões de engenharia
@@ -407,8 +439,9 @@ Atores: **Cliente** (consulta mapa e relatórios) e **Equipe Mantenedora** (carg
 | **Índice espacial (STRtree) no ETL** | Evita comparação força-bruta entre ~62 mil pontos e dezenas de milhares de polígonos. | Índice em memória |
 | **Vocabulário próprio de tipos de uso** | Isola o sistema dos códigos do IBGE e das classes do Overture/OSM (camada anticorrupção). | Mapeamentos a manter |
 | **Cascata de fallback do tipo e da geometria** | Sempre existe um valor válido, e a fonte mais confiável prevalece (QG, depois Overture, depois OSM, depois círculo). | Prioridade fixa no código |
-| **2ª fonte opcional** | Ausência do arquivo OSM só desliga o fallback, sem quebrar a carga. | Polígonos do OSM não são checados contra os do Overture |
-| **Carga idempotente (`DROP` + recria)** | Rodar duas vezes dá o mesmo resultado, sem lixo acumulado. | Não é incremental; falha no meio deixa o banco vazio |
+| **2ª fonte opcional** | Ausência do arquivo OSM só desliga o fallback, sem quebrar a carga. | Polígono do OSM que intersecta o Overture é descartado, mesmo que seja um prédio distinto |
+| **Carga em rascunho + promoção transacional** | A carga reescreve o banco de rascunho do zero; só `--promover` troca a produção, numa transação. Rodar duas vezes dá o mesmo resultado, e uma falha na promoção deixa a produção intacta. | Não é incremental; a promoção apaga e recopia todas as tabelas |
+| **Carga dividida em módulos (`importacao/`)** | Separa leitura, junção espacial, montagem das linhas e gravação. A montagem é função pura, testável sem banco. | Mais arquivos; o comando continua `import_data.py` |
 | **API como único acesso ao banco** | Credenciais nunca chegam ao navegador; permite trocar o banco sem tocar na interface. | Uma camada a mais |
 | **Tiles vetoriais (MVT) para o mapa, GeoJSON para o resto** | O navegador só recebe os prédios da área visível, já recortados e simplificados para o zoom; detalhe, busca e agregados seguem em JSON/GeoJSON, padrão aberto (RFC 7946) consumível por QGIS, Leaflet etc. | Tiles gerados sob demanda em Python, com cache só em memória |
 | **Níveis de detalhe (grade → pontos → polígonos)** | Abaixo do zoom 14 um prédio pequeno ocupa ~1 px; mandar os footprints repetiria a cidade inteira em cada tile. A grade vem uma vez e mostra onde há prédios e qual uso predomina. | Dois tamanhos de grade e limites de zoom a manter iguais no backend e no frontend |
@@ -439,9 +472,9 @@ Atores: **Cliente** (consulta mapa e relatórios) e **Equipe Mantenedora** (carg
 
 ## Limitações conhecidas
 
-- **Credenciais**: `import_data.py` traz usuário, porta e senha escritos no arquivo, **diferentes** dos de `config.py` e do `db.sh`. Isso é um risco de segurança (se o repositório for público ou compartilhado, trocar a senha) e quebra o "rodar com um comando". Mover para variáveis de ambiente, numa configuração única.
+- **Credenciais**: a carga não guarda mais usuário nem senha em `import_data.py`; usa `backend/config.py` e `backend/db.py`. Uma senha que tenha sido versionada antes continua no histórico do Git e deve ser trocada.
 - **Níveis de detalhe do mapa**: de perto, polígonos (zoom 14+); entre os zooms 12 e 14, os prédios pequenos viram pontos do tamanho real e os grandes continuam polígonos; mais longe, grades de densidade de ~88 m e ~175 m. O servidor pré-gera os tiles dos zooms 12 a 14 em segundo plano.
-- **OSM sem verificação de sobreposição**: os polígonos do OSM que não casam com nenhum endereço são inseridos sem checar se já existe um polígono do Overture no mesmo lugar, o que pode duplicar edificações (a contagem de 400 deve ser auditada).
+- **Sobreposição OSM × Overture por interseção simples**: a carga descarta todo polígono do OSM que intersecta algum do Overture (o Overture já inclui prédios derivados do OSM). Um prédio do OSM que apenas encosta num do Overture também é descartado.
 - **"Edificação" é ambígua**: a tabela tem uma linha por endereço, então 87.951 registros não são 87.951 prédios. O relatório rotula a contagem como "Edificações".
 - **Prédios sem endereço nem tipo** (~26 mil): o Overture municipal trouxe a forma, mas sem uso conhecido (ficam `desconhecido` até conferência de campo ou 2ª fonte com atributo).
 - **`em_cobertura` hoje não filtra nada**: a janela de cobertura (`JANELA_COBERTURA`, fixa no código) passou a cobrir o município inteiro.
@@ -451,10 +484,10 @@ Atores: **Cliente** (consulta mapa e relatórios) e **Equipe Mantenedora** (carg
 - **Coleta do OSM**: o cache do `bbox` é lido, mas nunca gravado; só `ways` são consultados (relações com `building` são ignoradas); e quadrantes que falham na repescagem são descartados sem aviso final.
 - **Origem de alguns dados não documentada**: Overture, CNEFE e o contorno do município são arquivos manuais (ver [Dados brutos](#dados-brutos-não-versionados)).
 - **Acoplamento por *magic string***: o frontend identifica "endereço sem prédio" pelo valor `fonte = 'QG/CNEFE'`. Um campo explícito (ex.: `tem_poligono`) seria mais robusto.
-- **ETL monolítico e destrutivo**: leitura, cruzamento, transformação e carga num único script, sem transação protegendo o estado anterior.
+- **Carga não incremental**: o rascunho é reescrito do zero e a promoção apaga e recopia todas as tabelas de produção (numa transação, então uma falha deixa a produção intacta). O `TRUNCATE` do rascunho confirma implicitamente no MySQL, então a carga do rascunho em si não é atômica.
 - **SRID 0** em todas as geometrias; a área é calculada no ETL por projeção local aproximada.
-- **Heurística espacial simples**: em ponto ambíguo, escolhe o polígono mais próximo, sem tratar multiplicidade.
-- **Testes parciais**: cobrem filtros, contratos e endpoints, mas não validam o cruzamento espacial do ETL (só a classificação `best_type`), e os de integração dependem dos números da carga atual.
+- **Heurística espacial simples**: se mais de um polígono contém o ponto, vale o primeiro devolvido pelo índice espacial, sem critério explícito; fora dos polígonos, vale o mais próximo dentro da tolerância de ~15 m.
+- **Testes parciais**: os do backend cobrem filtros, contratos e endpoints, e os de integração dependem dos números da carga atual. Os da carga (`importacao/tests/`) usam banco simulado, então não validam os `INSERT` contra o esquema real do MySQL.
 - **Dependência de serviço externo para o mapa base** (OpenFreeMap, dados do OpenStreetMap), o que contraria o objetivo de mapa offline (RF09).
 
 ## Roadmap
@@ -463,7 +496,7 @@ Em ordem sugerida de prioridade:
 
 1. **Segurança e configuração**: variáveis de ambiente únicas para banco e API, e trocar a credencial que está no código.
 2. **Modelo de dados**: migrar para o modelo normalizado (`BUILDING`, `CNEFE_ADDRESS`, `SPATIAL_MATCH`), resolvendo a relação 1 telhado × N endereços; adotar SRID 4674 para armazenar e 31984 para medir.
-3. **Qualidade do ETL**: carga em tabela de *staging* com troca atômica, deduplicação entre Overture e OSM, versões fixadas das dependências e testes do cruzamento espacial.
+3. **Qualidade do ETL**: versões fixadas das dependências e testes da carga contra um MySQL real (hoje usam banco simulado).
 4. **Escala do mapa**: os *vector tiles* com níveis de detalhe e o detalhe sob demanda já estão feitos; falta guardar os tiles gerados fora da memória (hoje um reinício do backend refaz o pré-aquecimento) e avaliar a migração para PostGIS (`ST_AsMVT` no banco).
 5. **Confiança e conferência de campo**: comparar as fontes de polígono e calcular `confianca_fonte`, `concordancia_fontes`, `nivel_verificacao` e `prioridade_campo` (RF06); gerar `fila_conferencia.csv` (RF07).
 6. **Estatísticas**: acrescentar mediana, densidade e % em construção (RF08), cada uma com fonte, método e limitação (RNF07); baixar as malhas oficiais de setores e bairros (RF02).
@@ -501,14 +534,22 @@ scripts/
   run.sh            sobe tudo (banco, importação, backend, frontend)
   mysql-local.cnf   tmpdir do MariaDB (sem /var/tmp no ambiente)
   fetch_osm_buildings.py   baixa polígonos do OSM (API Overpass) para data/raw/osm/
-import_data.py      Overture + OSM + QG → relação espacial → tabela `buildings`
+import_data.py      ponto de entrada da carga (chama importacao.cli)
+importacao/         carga: Overture + OSM + QG → relação espacial → banco de rascunho → produção
+  config.py         caminhos dos dados, tolerância espacial, lista de tabelas
+  fontes.py         leitura dos GeoJSON e recorte no município
+  espacial.py       polygon_of e match_points (junção espacial)
+  predios.py        monta a lista de prédios e associa os endereços
+  classificacao.py  tipo de uso (CNEFE, subtype e class do Overture)
+  registros.py      converte o resultado em linhas para INSERT (sem banco)
+  banco.py          transação com commit/rollback
+  stage.py          carga do banco de rascunho
+  producao.py       promoção do rascunho para produção
+  cli.py            argumentos (--promover) e orquestração
+importacao/tests/   testes da carga (sem MySQL)
 data/raw/           arquivos de dados (não versionados)
   overture/         edificações do Overture (janela e município)
   qg/               endereços do CNEFE
   osm/              polígonos do OSM (saída do script de coleta)
   municipio_boundary.geojson   contorno do município
 ```
-
-## Pontos de extensão
-
-A carga (`import_data.py`) e a rota `GET /api/buildings` (que já aceita filtros e paginação) são os lugares onde entram novas fontes de dados (importação IBGE/prefeitura) e novos filtros (por exemplo, por setor).
