@@ -54,7 +54,7 @@ dados abertos: Overture + OSM (polígonos) · QG/CNEFE (endereços)
         ↓
     ETL em Python (import_data.py → pacote importacao/)
         ↓
-    MariaDB/MySQL (tabela espacial `buildings`)
+    MariaDB/MySQL (banco de rascunho `ATLAS_STAGE` → banco de produção `ATLAS`)
         ↓
     FastAPI
       /api/map/meta · /api/map/overview · /api/tiles/{z}/{x}/{y}.pbf   (mapa)
@@ -73,21 +73,21 @@ dados abertos: Overture + OSM (polígonos) · QG/CNEFE (endereços)
 | `qg_810_endereco_*.json` (CNEFE/IBGE, município 2924009) | Endereços e estabelecimentos | 61.965 pontos |
 | `osm_buildings_paulo_afonso.geojson` (2ª fonte, via API Overpass/OSM, aberta e sem login) | Polígonos onde o Overture não cobre | 400 prédios (fallback; nenhum endereço novo foi adotado, pois o Overture municipal já cobria) |
 
-A tabela `buildings` tem uma linha por endereço QG (61.965) mais os prédios sem nenhum endereço, totalizando **87.951 registros**. 58.178 endereços (93,9%) caíram em polígono; restam 3.787 círculos ("bolinhas") de endereços sem prédio.
+A carga grava cada ponto do QG (61.965) em `ENDERECOS` e cada polígono em `EDIFICACOES`; `ENDERECO_EDIFICACAO` liga cada endereço ao prédio que o contém (ver [Modelo de dados](#modelo-de-dados)). Endereços fora de qualquer polígono ficam sem vínculo.
 
 **Fluxo de carga com as duas fontes de polígonos:**
 
 1. Os arquivos do Overture são unidos (sem duplicar IDs) e recortados no contorno do município (`municipio_boundary.geojson`).
 2. Cada endereço é associado a um polígono do Overture.
 3. Os endereços que sobraram tentam um polígono do OSM (se o arquivo existir; sem ele, o fallback é só desligado).
-4. O que ainda sobrar vira círculo de ~5 m.
+4. O que ainda sobrar fica em `ENDERECOS`, sem vínculo com edificação.
 
 **Regras da junção espacial endereço × edificação** (a mesma para as duas fontes):
 
 1. Se o ponto está **dentro** de um polígono, usa esse polígono.
 2. Se não, procura polígonos a até **~15 m** (tolerância para porta na fachada ou erro de GPS).
 3. Havendo mais de um candidato, escolhe o **mais próximo**.
-4. Endereço sem prédio vira um **círculo de ~5 m** ao redor do ponto.
+4. Endereço sem prédio fica em `ENDERECOS`, sem linha em `ENDERECO_EDIFICACAO`.
 
 **Tipo de uso**, em ordem de prioridade:
 
@@ -96,7 +96,7 @@ A tabela `buildings` tem uma linha por endereço QG (61.965) mais os prédios se
 3. classe do Overture, ou a tag `building` do OSM tratada como classe (ex.: `house`, `retail`, `church`);
 4. `desconhecido`.
 
-IDs de endereço duplicados no CNEFE recebem sufixo `#n`, e polígonos do OSM sem endereço entram com ID `osm-<id>`.
+Cada endereço do QG vira uma linha de `ENDERECOS` (a combinação `COD_UNICO` + `COD_ESPECIE` é única) e cada polígono, uma linha de `EDIFICACOES`; os polígonos do OSM entram com `ID_ORIGEM` `osm-<id>` em `EDIFICACAO_ORIGEM`.
 
 ### Dados brutos (não versionados)
 
@@ -299,63 +299,150 @@ No modo `light`, a feature carrega apenas `tipo`, `fonte` e `num_pavimentos`.
 
 ## Modelo de dados
 
-### Modelo atual (MVP)
+Esta seção reflete o script de criação do banco (`CREATE DATABASE` e `CREATE TABLE`). São dois bancos, ambos em `utf8mb4` (`utf8mb4_0900_ai_ci`):
 
-Uma única tabela espacial, recriada a cada carga:
+| Banco | Papel |
+| --- | --- |
+| `ATLAS_STAGE` (rascunho) | Recebe a carga: importação dos arquivos e cruzamento espacial de todos os registros. É recarregado do zero a cada carga |
+| `ATLAS` (produção) | O que a API lê para o mapa. Só muda quando a carga é promovida (`--promover`) |
 
-```
-buildings(id, geom, area_m2, tipo, endereco, bairro,
-          estabelecimento, num_pavimentos, fonte)
-```
+A separação existe porque atualizar direto o banco que o mapa consulta deixa o mapa lento ou com áreas vazias durante a importação. Assim, o trabalho pesado fica no rascunho e a produção recebe o resultado pronto. Os nomes `ATLAS` e `ATLAS_STAGE` são os do script; a carga usa os valores de `DB_NAME` e `DB_NAME_STAGE`.
 
-Todas as geometrias estão em **SRID 0** (coordenadas lon/lat sem sistema de referência declarado), o que limita o uso de funções geográficas nativas do banco. Há um `SPATIAL INDEX` em `geom`, usado pelo filtro `bbox`.
-
-### Tabelas gravadas pela carga atual
-
-A carga (`importacao/stage.py`) grava as tabelas abaixo no banco de rascunho e `promover` as copia para produção. As colunas vêm dos `INSERT` da carga; tipos, chaves e índices estão no esquema do banco, não aqui. A descrição de `buildings` acima não foi revalidada contra estas tabelas.
-
-| Tabela | Colunas gravadas | Observação |
-| --- | --- | --- |
-| `FONTES` | `ID`, `NOME`, `LICENCA` | Dataset de origem do polígono e sua licença |
-| `BAIRROS` | `ID`, `NOME` | Bairro = `DSC_LOCALIDADE` do CNEFE (1:1) até haver malha oficial de bairros |
-| `LOCALIDADES` | `ID`, `NOME`, `BAIRRO_ID` | Hoje `BAIRRO_ID` é igual ao `ID` |
-| `EDIFICACOES` | `ID`, `FONTE_ID`, `BAIRRO_ID`, `TIPO_USO`, `ORIGEM_TIPO`, `USO_MISTO`, `N_ENDERECOS`, `NUM_PAVIMENTOS`, `CONFIANCA_FONTE`, `GEOM`, `PONTO_ROTULO` | `AREA_M2` é coluna calculada pelo banco. `ORIGEM_TIPO`: `cnefe`, `overture_subtype`, `overture_class` ou `sem_dado`. `USO_MISTO` = 1 se os endereços do prédio têm tipos diferentes; o tipo do prédio é o mais frequente entre eles |
-| `EDIFICACAO_ORIGEM` | `EDIFICACAO_ID`, `ID_ORIGEM`, `FONTES`, `ATRIBUTOS` | ID e atributos originais do Overture/OSM |
-| `ENDERECOS` | `ID`, `COD_UNICO`, `COD_ESPECIE`, `COD_TIPO_ESPECI`, `COD_SETOR`, `NUM_QUADRA`, `NUM_FACE`, `CEP`, `LOCALIDADE_ID`, `LOGRADOURO_NUM`, `COMPLEMENTO`, `ESTABELECIMENTO`, `NV_GEO_COORD`, `PT` | `TIPO_USO` é coluna calculada pelo banco |
-| `ENDERECO_EDIFICACAO` | `ENDERECO_ID`, `EDIFICACAO_ID`, `METODO`, `DISTANCIA_M` | Relação endereço × edificação. `METODO`: `contido` ou `tolerancia` |
-| `AGG_BAIRRO_TIPO` | `BAIRRO_NOME`, `TIPO_USO`, `N_EDIFICACOES`, `N_ENDERECOS`, `AREA_SOMA_M2` | Calculada no banco ao fim da carga, por bairro e tipo |
-| `CARGAS` | `ID`, `INICIADA_EM`, `CONCLUIDA_EM`, `PARAMETROS`, `ARQUIVOS`, `CONTAGENS` | Histórico: parâmetros, arquivos usados e contagens de cada carga. A promoção só aceita um rascunho com carga concluída |
-
-### Modelo-alvo (documentação)
-
-A documentação define um modelo normalizado, a ser adotado nas próximas etapas:
-
-| Entidade | Papel | Campos principais |
-| --- | --- | --- |
-| `NEIGHBORHOOD` | Bairro e estatísticas agregadas | nome, código IBGE do município, área total e mediana, nº de edificações e de endereços, densidade (edif./km²) |
-| `CENSUS_TRACT` | Setor censitário | código do setor, município, tipo, geometria `MultiPolygon` (SRID 4674) |
-| `BUILDING` | Telhado/edificação | `roof_geom` (4674), `utm_geom_24s` (31984), área, fonte primária, `source_confidence`, `source_agreement`, `verification_level` |
-| `CNEFE_ADDRESS` | Endereço do CNEFE | código CNEFE, latitude/longitude, geometria `Point` (4674), logradouro, número, complemento, CEP, espécie |
-| `SPATIAL_MATCH` | Associação N:M entre telhado e endereço | distância em metros, `is_exact_match`, `is_within_5m`, `is_within_10m`, `processed_at` |
-| `FIELD_INSPECTION` | Conferência de campo | pontuação de prioridade, pavimentos observados, status, foto de referência, data |
+As tabelas de `FONTES` a `AGG_BAIRRO_TIPO`, mais `CARGAS`, precisam existir nos dois bancos: a carga grava no rascunho e a promoção copia cada uma para a produção. `USUARIOS` (cadastro e login da API) não faz parte da carga.
 
 ```mermaid
 erDiagram
-    NEIGHBORHOOD ||--o{ CENSUS_TRACT : agrega
-    NEIGHBORHOOD ||--o{ BUILDING : contem
-    CENSUS_TRACT ||--o{ BUILDING : circunscreve
-    CENSUS_TRACT ||--o{ CNEFE_ADDRESS : contem
-    BUILDING ||--o{ SPATIAL_MATCH : origina
-    CNEFE_ADDRESS ||--o{ SPATIAL_MATCH : origina
-    BUILDING |o--o| FIELD_INSPECTION : priorizado_para
+    FONTES ||--o{ EDIFICACOES : "origem do poligono"
+    BAIRROS |o--o{ EDIFICACOES : "bairro"
+    BAIRROS ||--o{ LOCALIDADES : "contem"
+    LOCALIDADES ||--o{ ENDERECOS : "contem"
+    EDIFICACOES ||--o| EDIFICACAO_ORIGEM : "ids de origem"
+    EDIFICACOES ||--o{ ENDERECO_EDIFICACAO : "recebe"
+    ENDERECOS ||--o| ENDERECO_EDIFICACAO : "vinculado a"
 ```
 
-**Regras do modelo-alvo**
+`AGG_BAIRRO_TIPO`, `CARGAS` e `USUARIOS` não têm chave estrangeira.
 
-- **Um telhado para N endereços** (prédio vertical, lote com múltiplos endereços), resolvido pela tabela associativa `SPATIAL_MATCH`. No MVP, o mesmo polígono se repete em várias linhas: os tiles desenham cada geometria uma vez (pelo `geometry_key`, um hash dela) e `/api/buildings/{id}` lista em `enderecos` as linhas com a mesma geometria.
-- **Armazenar em 4674 (SIRGAS 2000), medir em 31984 (SIRGAS 2000 / UTM 24S)**: geometria canônica em graus, geometria projetada para cálculos de área e distância.
-- `verification_level`: `automatico` → `conferido_tela` → `conferido_campo`.
-- `source_agreement`: `concordam` / `divergem` / `so_uma_fonte`.
+### Tabelas
+
+**`FONTES`**: dataset de origem do polígono.
+
+| Coluna | Tipo | Observação |
+| --- | --- | --- |
+| `ID` | `TINYINT UNSIGNED` | Chave primária, autoincremento |
+| `NOME` | `VARCHAR(48)` | Único |
+| `LICENCA` | `VARCHAR(24)` | Licença do dataset |
+
+**`BAIRROS`**: bairro = `DSC_LOCALIDADE` do CNEFE (1:1) até haver malha oficial de bairros.
+
+| Coluna | Tipo | Observação |
+| --- | --- | --- |
+| `ID` | `SMALLINT UNSIGNED` | Chave primária, autoincremento |
+| `NOME` | `VARCHAR(40)` | Único |
+
+**`LOCALIDADES`**
+
+| Coluna | Tipo | Observação |
+| --- | --- | --- |
+| `ID` | `SMALLINT UNSIGNED` | Chave primária, autoincremento |
+| `NOME` | `VARCHAR(40)` | Único |
+| `BAIRRO_ID` | `SMALLINT UNSIGNED` | Obrigatório; referencia `BAIRROS`. A carga grava o mesmo valor de `ID` |
+
+**`EDIFICACOES`**: uma linha por polígono de edificação.
+
+| Coluna | Tipo | Observação |
+| --- | --- | --- |
+| `ID` | `INT UNSIGNED` | Chave primária, autoincremento |
+| `FONTE_ID` | `TINYINT UNSIGNED` | Obrigatório; referencia `FONTES` |
+| `BAIRRO_ID` | `SMALLINT UNSIGNED` | Opcional; referencia `BAIRROS` |
+| `TIPO_USO` | `ENUM` | `residencial`, `comercial`, `servico`, `religioso`, `institucional`, `hospedagem`, `agropecuario`, `desconhecido` (padrão) |
+| `ORIGEM_TIPO` | `ENUM` | `cnefe`, `overture_subtype`, `overture_class`, `sem_dado` (padrão) |
+| `USO_MISTO` | `BOOLEAN` | 1 se os endereços do prédio têm tipos diferentes |
+| `N_ENDERECOS` | `SMALLINT UNSIGNED` | Padrão 0 |
+| `NUM_PAVIMENTOS` | `TINYINT UNSIGNED` | Opcional |
+| `CONFIANCA_FONTE` | `DECIMAL(4,3)` | Opcional; entre 0 e 1 (`CHECK`) |
+| `CONCORDANCIA_FONTES` | `ENUM` | Opcional: `concordam`, `divergem`, `so_uma_fonte`. Não preenchida pela carga |
+| `NIVEL_VERIFICACAO` | `ENUM` | `automatico` (padrão) → `conferido_tela` → `conferido_campo`. A carga não grava |
+| `PRIORIDADE_CAMPO` | `TINYINT UNSIGNED` | Opcional. Não preenchida pela carga |
+| `GEOM` | `GEOMETRY`, SRID 4674 | Obrigatório; só `POLYGON` ou `MULTIPOLYGON` (`CHECK`); índice espacial |
+| `PONTO_ROTULO` | `POINT`, SRID 4674 | Obrigatório; índice espacial |
+| `AREA_M2` | `DECIMAL(9,2)` | Coluna gerada e armazenada: `ROUND(ST_AREA(GEOM), 2)` |
+
+**`EDIFICACAO_ORIGEM`**: de onde veio cada polígono.
+
+| Coluna | Tipo | Observação |
+| --- | --- | --- |
+| `EDIFICACAO_ID` | `INT UNSIGNED` | Chave primária; referencia `EDIFICACOES` (`ON DELETE CASCADE`) |
+| `ID_ORIGEM` | `VARCHAR(64)` (`ASCII_BIN`) | ID original no Overture ou `osm-<id>`; único |
+| `FONTES` | `JSON` | Obrigatório |
+| `ATRIBUTOS` | `JSON` | Opcional |
+
+**`ENDERECOS`**: uma linha por ponto do CNEFE.
+
+| Coluna | Tipo | Observação |
+| --- | --- | --- |
+| `ID` | `INT UNSIGNED` | Chave primária, autoincremento |
+| `COD_UNICO` | `INT UNSIGNED` | Junto com `COD_ESPECIE`, forma a chave natural (única) |
+| `COD_ESPECIE` | `TINYINT UNSIGNED` | De 1 a 8 (`CHECK`) |
+| `COD_TIPO_ESPECI` | `SMALLINT UNSIGNED` | Opcional |
+| `TIPO_USO` | `ENUM` (virtual) | Calculado de `COD_ESPECIE`: 1 residencial, 2 hospedagem, 3 agropecuário, 4 institucional, 5 serviço, 6 comercial, 7 desconhecido, 8 religioso |
+| `COD_SETOR` | `CHAR(16)` (`ASCII`) | Obrigatório; com índice |
+| `NUM_QUADRA`, `NUM_FACE` | `SMALLINT UNSIGNED` | Opcionais |
+| `CEP` | `CHAR(8)` (`ASCII`) | Opcional |
+| `LOCALIDADE_ID` | `SMALLINT UNSIGNED` | Obrigatório; referencia `LOCALIDADES` |
+| `LOGRADOURO_NUM` | `VARCHAR(80)` | Obrigatório |
+| `COMPLEMENTO` | `VARCHAR(60)` | Opcional |
+| `ESTABELECIMENTO` | `VARCHAR(80)` | Opcional |
+| `NV_GEO_COORD` | `TINYINT UNSIGNED` | Obrigatório |
+| `PT` | `POINT`, SRID 4674 | Obrigatório; índice espacial |
+
+Também há um índice `FULLTEXT` em `LOGRADOURO_NUM` e `ESTABELECIMENTO`.
+
+**`ENDERECO_EDIFICACAO`**: vínculo espacial entre endereço e edificação.
+
+| Coluna | Tipo | Observação |
+| --- | --- | --- |
+| `ENDERECO_ID` | `INT UNSIGNED` | Chave primária; referencia `ENDERECOS` (`ON DELETE CASCADE`) |
+| `EDIFICACAO_ID` | `INT UNSIGNED` | Referencia `EDIFICACOES` (`ON DELETE CASCADE`); com índice |
+| `METODO` | `ENUM` | `contido` ou `tolerancia` |
+| `DISTANCIA_M` | `DECIMAL(5,2)` | Padrão 0 |
+
+**`AGG_BAIRRO_TIPO`**: resumo por bairro e tipo, calculado no banco ao fim da carga.
+
+| Coluna | Tipo | Observação |
+| --- | --- | --- |
+| `BAIRRO_NOME` | `VARCHAR(40)` | Chave primária (junto com `TIPO_USO`) |
+| `TIPO_USO` | `ENUM` | Mesmos valores de `EDIFICACOES.TIPO_USO` |
+| `N_EDIFICACOES`, `N_ENDERECOS` | `INT UNSIGNED` | Contagens |
+| `AREA_SOMA_M2` | `DECIMAL(12,2)` | Soma das áreas |
+
+**`CARGAS`**: histórico das cargas.
+
+| Coluna | Tipo | Observação |
+| --- | --- | --- |
+| `ID` | `SMALLINT UNSIGNED` | Chave primária, autoincremento |
+| `INICIADA_EM` | `DATETIME` | Padrão: agora |
+| `CONCLUIDA_EM` | `DATETIME` | Nulo enquanto a carga não termina; a promoção só aceita rascunho com carga concluída |
+| `PARAMETROS`, `ARQUIVOS` | `JSON` | Obrigatórios: parâmetros usados e arquivos lidos |
+| `CONTAGENS` | `JSON` | Opcional: contagens por tabela |
+
+**`USUARIOS`**: cadastro e login da API.
+
+| Coluna | Tipo | Observação |
+| --- | --- | --- |
+| `ID` | `INT UNSIGNED` | Chave primária, autoincremento |
+| `NOME` | `VARCHAR(100)` | Obrigatório |
+| `EMAIL` | `VARCHAR(100)` | Obrigatório; único |
+| `SENHA` | `VARCHAR(255)` | Obrigatório |
+| `ATIVO` | `BOOLEAN` | Padrão verdadeiro |
+| `CRIADO_EM` | `DATETIME` | Padrão: agora |
+
+### Regras do modelo
+
+- **Uma edificação para N endereços**: `ENDERECO_EDIFICACAO` tem `ENDERECO_ID` como chave primária, então cada endereço liga a no máximo uma edificação, e uma edificação pode ter vários endereços (`N_ENDERECOS`, `USO_MISTO`). Endereço sem edificação não tem linha nessa tabela.
+- **Geometrias em SRID 4674** (SIRGAS 2000): o banco rejeita geometria em outro SRID nas colunas `GEOM`, `PONTO_ROTULO` e `PT`. A área (`AREA_M2`) é calculada pelo próprio banco.
+- **Tipo de uso**: em `ENDERECOS` vem de `COD_ESPECIE`; em `EDIFICACOES` vem da carga (o tipo mais frequente entre os endereços do prédio e, sem endereços, o do Overture/OSM).
+- **Índices espaciais** em `EDIFICACOES.GEOM`, `EDIFICACOES.PONTO_ROTULO` e `ENDERECOS.PT`.
 
 ## Testes
 
@@ -368,12 +455,12 @@ Suíte em `backend/tests/test_api.py`, em níveis:
 | Regra de domínio | `best_type` do ETL (o QG prevalece sobre o Overture) |
 | Endpoints | Com o banco simulado (`monkeypatch`): os filtros chegam à camada de dados, `bbox` inválido devolve 422 e id inexistente devolve 404 |
 | Integração | Contra o MariaDB real; **pulados automaticamente** se o banco estiver fora do ar |
-| Carga (ETL) | Em `importacao/tests/`: classificação, junção espacial, leitura e recorte, montagem dos registros, gravação do rascunho e promoção. Usam arquivos temporários e um banco simulado, sem MySQL |
+| Carga (ETL) | Em `tests/importacao/`: classificação, junção espacial, leitura e recorte, montagem dos registros, gravação do rascunho e promoção. Usam arquivos temporários e um banco simulado, sem MySQL |
 
 ```bash
 ./.venv/bin/pip install pytest httpx      # dependências de desenvolvimento
 ./.venv/bin/python -m pytest backend/tests -q   # rodar da raiz do projeto
-./.venv/bin/python -m pytest importacao/tests -q # testes da carga, também da raiz
+./.venv/bin/python -m pytest tests/importacao -q # testes da carga, também da raiz
 ```
 
 Os testes de integração de cobertura assumem os números da carga atual (87.951 registros) e precisam ser atualizados quando os dados mudarem.
@@ -397,7 +484,7 @@ A coluna **Estado** é uma avaliação do código atual (MVP) contra a documenta
 | RF03 | Edificações de duas fontes independentes (Overture e Google Open Buildings) | Parcial | Overture + OpenStreetMap (fallback, em vez do Google Open Buildings); as fontes não são comparadas entre si |
 | RF04 | Classificar cada endereço por espécie | Implementado | Mapeamento `ESPECIE_TO_TIPO` |
 | RF05 | Associar cada endereço à edificação mais próxima, com raio documentado | Implementado | Contém → tolerância de ~15 m → mais próximo |
-| RF06 | Campos de confiança (`confianca_fonte`, `concordancia_fontes`, `nivel_verificacao`, `prioridade_campo`) | Planejado | Exige comparar as fontes de polígono entre si |
+| RF06 | Campos de confiança (`confianca_fonte`, `concordancia_fontes`, `nivel_verificacao`, `prioridade_campo`) | Parcial | As quatro colunas existem em `EDIFICACOES`, mas a carga grava só `CONFIANCA_FONTE` (vinda do Overture); `NIVEL_VERIFICACAO` fica no padrão `automatico` e as outras duas ficam nulas, pois exigem comparar as fontes de polígono entre si |
 | RF07 | Gerar e priorizar a fila de conferência de campo (`fila_conferencia.csv`) | Planejado | |
 | RF08 | Tabela mestra de estatísticas por recorte territorial | Parcial | `/api/stats` agrega total, por tipo, por bairro, área total e média, e o relatório já usa a rota. Faltam mediana, densidade, endereços por edificação e % em construção |
 | RF09 | Mapa interativo offline, com simbologia por densidade, faixa de área e endereços clusterizados | Parcial | Mapa interativo com cor por tipo, 3D e grade de densidade na visão afastada (~175 m e ~88 m); o mapa base vem do OpenFreeMap (online) e não há simbologia por faixa de área nem clusterização dos endereços |
@@ -485,9 +572,8 @@ Atores: **Cliente** (consulta mapa e relatórios) e **Equipe Mantenedora** (carg
 - **Origem de alguns dados não documentada**: Overture, CNEFE e o contorno do município são arquivos manuais (ver [Dados brutos](#dados-brutos-não-versionados)).
 - **Acoplamento por *magic string***: o frontend identifica "endereço sem prédio" pelo valor `fonte = 'QG/CNEFE'`. Um campo explícito (ex.: `tem_poligono`) seria mais robusto.
 - **Carga não incremental**: o rascunho é reescrito do zero e a promoção apaga e recopia todas as tabelas de produção (numa transação, então uma falha deixa a produção intacta). O `TRUNCATE` do rascunho confirma implicitamente no MySQL, então a carga do rascunho em si não é atômica.
-- **SRID 0** em todas as geometrias; a área é calculada no ETL por projeção local aproximada.
 - **Heurística espacial simples**: se mais de um polígono contém o ponto, vale o primeiro devolvido pelo índice espacial, sem critério explícito; fora dos polígonos, vale o mais próximo dentro da tolerância de ~15 m.
-- **Testes parciais**: os do backend cobrem filtros, contratos e endpoints, e os de integração dependem dos números da carga atual. Os da carga (`importacao/tests/`) usam banco simulado, então não validam os `INSERT` contra o esquema real do MySQL.
+- **Testes parciais**: os do backend cobrem filtros, contratos e endpoints, e os de integração dependem dos números da carga atual. Os da carga (`tests/importacao/`) usam banco simulado, então não validam os `INSERT` contra o esquema real do MySQL.
 - **Dependência de serviço externo para o mapa base** (OpenFreeMap, dados do OpenStreetMap), o que contraria o objetivo de mapa offline (RF09).
 
 ## Roadmap
@@ -495,14 +581,13 @@ Atores: **Cliente** (consulta mapa e relatórios) e **Equipe Mantenedora** (carg
 Em ordem sugerida de prioridade:
 
 1. **Segurança e configuração**: variáveis de ambiente únicas para banco e API, e trocar a credencial que está no código.
-2. **Modelo de dados**: migrar para o modelo normalizado (`BUILDING`, `CNEFE_ADDRESS`, `SPATIAL_MATCH`), resolvendo a relação 1 telhado × N endereços; adotar SRID 4674 para armazenar e 31984 para medir.
-3. **Qualidade do ETL**: versões fixadas das dependências e testes da carga contra um MySQL real (hoje usam banco simulado).
-4. **Escala do mapa**: os *vector tiles* com níveis de detalhe e o detalhe sob demanda já estão feitos; falta guardar os tiles gerados fora da memória (hoje um reinício do backend refaz o pré-aquecimento) e avaliar a migração para PostGIS (`ST_AsMVT` no banco).
-5. **Confiança e conferência de campo**: comparar as fontes de polígono e calcular `confianca_fonte`, `concordancia_fontes`, `nivel_verificacao` e `prioridade_campo` (RF06); gerar `fila_conferencia.csv` (RF07).
-6. **Estatísticas**: acrescentar mediana, densidade e % em construção (RF08), cada uma com fonte, método e limitação (RNF07); baixar as malhas oficiais de setores e bairros (RF02).
-7. **API**: ligar `response_model` aos contratos Pydantic, e paginação por cursor.
-8. **Mapa**: simbologia por faixa de área, clusterização de endereços e opção offline, com mapa base próprio (RF09); a grade de densidade da visão afastada já existe.
-9. **Publicação**: disponibilizar mapa e estatísticas para usuários externos (RF10), com Docker Compose para simplificar a instalação e revisão da licença ODbL.
+2. **Qualidade do ETL**: versões fixadas das dependências e testes da carga contra um MySQL real (hoje usam banco simulado).
+3. **Escala do mapa**: os *vector tiles* com níveis de detalhe e o detalhe sob demanda já estão feitos; falta guardar os tiles gerados fora da memória (hoje um reinício do backend refaz o pré-aquecimento) e avaliar a migração para PostGIS (`ST_AsMVT` no banco).
+4. **Confiança e conferência de campo**: comparar as fontes de polígono e calcular `confianca_fonte`, `concordancia_fontes`, `nivel_verificacao` e `prioridade_campo` (RF06); gerar `fila_conferencia.csv` (RF07).
+5. **Estatísticas**: acrescentar mediana, densidade e % em construção (RF08), cada uma com fonte, método e limitação (RNF07); baixar as malhas oficiais de setores e bairros (RF02).
+6. **API**: ligar `response_model` aos contratos Pydantic, e paginação por cursor.
+7. **Mapa**: simbologia por faixa de área, clusterização de endereços e opção offline, com mapa base próprio (RF09); a grade de densidade da visão afastada já existe.
+8. **Publicação**: disponibilizar mapa e estatísticas para usuários externos (RF10), com Docker Compose para simplificar a instalação e revisão da licença ODbL.
 
 ## Estrutura do repositório
 
@@ -546,7 +631,7 @@ importacao/         carga: Overture + OSM + QG → relação espacial → banco 
   stage.py          carga do banco de rascunho
   producao.py       promoção do rascunho para produção
   cli.py            argumentos (--promover) e orquestração
-importacao/tests/   testes da carga (sem MySQL)
+tests/importacao/   testes da carga
 data/raw/           arquivos de dados (não versionados)
   overture/         edificações do Overture (janela e município)
   qg/               endereços do CNEFE
