@@ -1,6 +1,9 @@
 import { corDoTipo, rotuloDoTipo, TIPOS_ORDEM, type Theme } from '../constants';
 import { formatNumber } from '../format';
+import type { MapMeta } from '../mapTiles';
+import type { RooftopOptions } from '../rooftop';
 import { Icon } from './Icon';
+import { RooftopControls } from './RooftopControls';
 
 interface Props {
   counts: Record<string, number>;
@@ -16,6 +19,11 @@ interface Props {
   soDoSelecionado: boolean;
   onSoDoSelecionado: (value: boolean) => void;
   hasSelection: boolean;
+  showRooftop: boolean;
+  onShowRooftop: (value: boolean) => void;
+  rooftopMeta: MapMeta | null;
+  rooftopOptions: RooftopOptions;
+  onRooftopOptions: (value: RooftopOptions) => void;
 }
 
 export function LayersPanel(props: Props) {
@@ -80,6 +88,19 @@ export function LayersPanel(props: Props) {
           <p className="muted small">Selecione um prédio no mapa para ver os endereços dele.</p>
         )}
       </div>
+
+      <div className="section-head">
+        <h2 className="section-label">CNEFE rooftop (local)</h2>
+      </div>
+      <RooftopControls
+        value={props.rooftopOptions}
+        onChange={props.onRooftopOptions}
+        meta={props.rooftopMeta}
+        theme={theme}
+        showEnableToggle
+        enabled={props.showRooftop}
+        onEnabledChange={props.onShowRooftop}
+      />
 
       <p className="hint">
         <Icon name="info" size={14} />

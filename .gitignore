@@ -18,3 +18,10 @@ qg_*.json*
 # Node
 frontend/node_modules/
 frontend/dist/
+
+backend/.env
+
+# Saídas locais do CNEFE rooftop (dados derivados, não versionados)
+data/processed/*.gpkg
+data/processed/*.geojson
+data/processed/*_debug/

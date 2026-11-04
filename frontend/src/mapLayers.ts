@@ -7,6 +7,7 @@ import {
   TIPOS_ORDEM,
   type Theme,
 } from './constants';
+import { corDaConfianca, ROOFTOP_CONFIDENCES, type RooftopOptions } from './rooftop';
 import {
   buildingTileUrl,
   DOT_MIN_ZOOM,
@@ -41,6 +42,131 @@ export const EXTRUSION_LAYER = 'buildings-3d';
 export const overviewId = (level: number) => `overview-${level}`;
 export const OVERVIEW_LAYERS = OVERVIEW_LEVELS.map(({ level }) => overviewId(level));
 export const CLICKABLE_LAYERS = [SELECTED_LAYER, EXTRUSION_LAYER, FILL_LAYER, DOT_LAYER];
+
+export const ROOFTOP_SOURCE = 'rooftop-vila-nobre';
+export const ROOFTOP_POLYGON_SOURCE = 'rooftop-poligonos';
+export const ROOFTOP_LAYER = 'rooftop-points';
+export const ROOFTOP_LABEL_LAYER = 'rooftop-address-labels';
+export const ROOFTOP_POLYGON_LAYER = 'rooftop-polygon-fill';
+export const ROOFTOP_POLYGON_LINE_LAYER = 'rooftop-polygon-line';
+export const ROOFTOP_CLICKABLE_LAYERS = [ROOFTOP_LAYER, ROOFTOP_POLYGON_LAYER];
+
+const confiancaColor = (theme: Theme): any => ['match', ['get', 'confianca'],
+  'alta', corDaConfianca('alta', theme),
+  'media', corDaConfianca('media', theme),
+  'baixa', corDaConfianca('baixa', theme),
+  corDaConfianca('nenhuma', theme)];
+
+/** Camada local do CNEFE rooftop (sem API externa), para conferência antes/depois. */
+export function addRooftopLayer(map: MapLibreMap, apiUrl: string, beforeId?: string, theme: Theme = 'dark') {
+  // Polígonos primeiro: o preenchimento do prédio fica abaixo dos pontos.
+  map.addSource(ROOFTOP_POLYGON_SOURCE, {
+    type: 'geojson',
+    data: `${apiUrl}/api/rooftop/vila-nobre/poligonos`,
+  });
+  map.addLayer({
+    id: ROOFTOP_POLYGON_LAYER,
+    type: 'fill',
+    source: ROOFTOP_POLYGON_SOURCE,
+    paint: {
+      'fill-color': confiancaColor(theme),
+      'fill-opacity': ['case', ['==', ['get', 'mudou'], true], 0.38, 0.22],
+    },
+  }, beforeId);
+  map.addLayer({
+    id: ROOFTOP_POLYGON_LINE_LAYER,
+    type: 'line',
+    source: ROOFTOP_POLYGON_SOURCE,
+    paint: {
+      'line-color': confiancaColor(theme),
+      'line-width': ['case', ['==', ['get', 'revisar'], true], 2.2, 1.1],
+      'line-opacity': 0.9,
+    },
+  }, beforeId);
+
+  map.addSource(ROOFTOP_SOURCE, {
+    type: 'geojson',
+    data: `${apiUrl}/api/rooftop/vila-nobre`,
+  });
+  map.addLayer({
+    id: ROOFTOP_LAYER,
+    type: 'circle',
+    source: ROOFTOP_SOURCE,
+    paint: {
+      'circle-radius': ['case', ['==', ['get', 'confianca'], 'alta'], 6.5, ['==', ['get', 'confianca'], 'media'], 5.5, 4.5],
+      'circle-color': [
+        'case',
+        ['any', ['==', ['get', 'mudou_bld'], true], ['==', ['get', 'mudou_ponto'], true]],
+        theme === 'light' ? '#ea580c' : '#fb923c',
+        confiancaColor(theme),
+      ],
+      'circle-stroke-width': 1.2,
+      'circle-stroke-color': theme === 'light' ? '#ffffff' : '#0f172a',
+      'circle-opacity': 0.95,
+    },
+  }, beforeId);
+  map.addLayer({
+    id: ROOFTOP_LABEL_LAYER,
+    type: 'symbol',
+    source: ROOFTOP_SOURCE,
+    minzoom: 16,
+    layout: {
+      'text-field': ['get', 'endereco'],
+      'text-size': 11,
+      'text-max-width': 12,
+      'text-offset': [0, 1.2],
+      'text-allow-overlap': false,
+    },
+    paint: {
+      'text-color': theme === 'light' ? '#172554' : '#eff6ff',
+      'text-halo-color': theme === 'light' ? '#ffffff' : '#0f172a',
+      'text-halo-width': 1.5,
+    },
+  }, beforeId);
+}
+
+function combinarFiltros(a: any, b: any): any {
+  if (a && b) return ['all', a, b];
+  return a ?? b;
+}
+
+/** Liga/desliga pontos e polígonos e aplica confiança/alterados sem recarregar o GeoJSON. */
+export function applyRooftopFilters(map: MapLibreMap, options: RooftopOptions) {
+  const todas = options.confiancas.size === ROOFTOP_CONFIDENCES.length;
+  const filtroConfianca = todas
+    ? undefined
+    : ['in', ['get', 'confianca'], ['literal', [...options.confiancas]]];
+  const filtroPontos = combinarFiltros(
+    filtroConfianca,
+    options.onlyChanged
+      ? ['any', ['==', ['get', 'mudou_bld'], true], ['==', ['get', 'mudou_ponto'], true]]
+      : undefined,
+  );
+  const filtroPoligonos = combinarFiltros(
+    filtroConfianca,
+    options.onlyChanged ? ['==', ['get', 'mudou'], true] : undefined,
+  );
+
+  for (const layer of [ROOFTOP_LAYER, ROOFTOP_LABEL_LAYER]) {
+    if (!map.getLayer(layer)) continue;
+    map.setFilter(layer, filtroPontos);
+    map.setLayoutProperty(layer, 'visibility', options.showPoints ? 'visible' : 'none');
+  }
+  for (const layer of [ROOFTOP_POLYGON_LAYER, ROOFTOP_POLYGON_LINE_LAYER]) {
+    if (!map.getLayer(layer)) continue;
+    map.setFilter(layer, filtroPoligonos);
+    map.setLayoutProperty(layer, 'visibility', options.showPolygons ? 'visible' : 'none');
+  }
+}
+
+export function removeRooftopLayer(map: MapLibreMap) {
+  for (const layer of [ROOFTOP_LABEL_LAYER, ROOFTOP_LAYER, ROOFTOP_POLYGON_LINE_LAYER, ROOFTOP_POLYGON_LAYER]) {
+    if (map.getLayer(layer)) map.removeLayer(layer);
+  }
+  for (const source of [ROOFTOP_SOURCE, ROOFTOP_POLYGON_SOURCE]) {
+    if (map.getSource(source)) map.removeSource(source);
+  }
+}
 
 export function colorByTipo(tipo: unknown, theme: Theme = 'dark'): ExpressionSpecification {
   const cores = coresPorTema(theme);

@@ -159,6 +159,22 @@ Abra **http://127.0.0.1:5173/**. Para parar o banco: `bash scripts/db.sh stop`.
 - Frontend: a variável `VITE_API_URL` define o endereço da API (padrão `http://127.0.0.1:8000`).
 - CORS: o backend aceita apenas `localhost:5173` e `127.0.0.1:5173`.
 
+### Camada de conferência CNEFE rooftop (local, sem API externa)
+
+O `cnefe_rooftop.py` usa quadra/face do CNEFE para lançar raios da rua para dentro do quarteirão e achar o prédio de cada endereço. Para rodar fora do backend:
+
+```bash
+./.venv/bin/pip install -r requirements-rooftop.txt
+./.venv/bin/python cnefe_rooftop.py data/raw/qg/qg_810_endereco_Munic2924009.json \
+  data/raw/overture/overture-2026-08-19.0-building-municipio.geojson \
+  data/processed/pontos_rooftop.gpkg --debug --web-geojson data/processed/pontos_rooftop.geojson
+```
+
+- `--debug` grava `<saida>.debug.gpkg` (uma camada por etapa, com antes/depois) e `<saida>_debug/*.csv` (`resumo_etapas.csv`, raios, hits, candidatos etc.).
+- `--web-geojson` é o arquivo que o backend serve; aponte outro caminho com `ROOFTOP_GEOJSON`.
+- No frontend, abra `http://127.0.0.1:5173/?camada=rooftop` para ver só essa camada.
+- Endpoints: `GET /api/rooftop/vila-nobre` e `GET /api/rooftop/vila-nobre/meta`.
+
 ## Arquitetura
 
 Arquitetura em **camadas**, com um módulo de carga em lote separado da aplicação web:

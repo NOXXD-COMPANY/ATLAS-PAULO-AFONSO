@@ -53,6 +53,19 @@ export interface MapMeta {
   version: string;
   bounds: Bounds | null;
   levels?: number;
+  address_count?: number;
+  building_count?: number;
+  changed_count?: number;
+  high_count?: number;
+  medium_count?: number;
+  low_count?: number;
+  revise_face_count?: number;
+  polygon_count?: number;
+  polygon_file?: string;
+  polygon_missing?: boolean;
+  updated_at?: number | null;
+  source?: string;
+  missing?: boolean;
 }
 
 /** Opacidade por zoom: entra em [enter, enter+FADE_IN], sai depois de exit. */

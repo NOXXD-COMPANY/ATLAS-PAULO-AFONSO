@@ -5,8 +5,10 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import { alturaDoPredio, FONTE_PONTO, TIPOS_ORDEM, type Theme } from './constants';
 import {
   addDataLayers,
+  addRooftopLayer,
   addSelectionLayers,
   applyDataFilters,
+  applyRooftopFilters,
   basemapUrl,
   CLICKABLE_LAYERS,
   DOT_LAYER,
@@ -15,6 +17,9 @@ import {
   OVERVIEW_LAYERS,
   overviewId,
   removeDataLayers,
+  removeRooftopLayer,
+  ROOFTOP_CLICKABLE_LAYERS,
+  ROOFTOP_POLYGON_LAYER,
   setAllBuildings3d,
   styleBasemap,
 } from './mapLayers';
@@ -25,6 +30,9 @@ import { authHeaders, guardarSessao, lerSessao, limparSessao } from './session';
 import { Icon } from './components/Icon';
 import { LayersPanel } from './components/LayersPanel';
 import { MapControls } from './components/MapControls';
+import { RooftopCard } from './components/RooftopCard';
+import { RooftopControls } from './components/RooftopControls';
+import { defaultRooftopOptions, type RooftopOptions, type RooftopSelection } from './rooftop';
 import { SearchBox, type SearchPick } from './components/SearchBox';
 const Report = lazy(() => import('./Report'));
 
@@ -38,6 +46,8 @@ type GeoJsonFeature = {
 type Toast = { id: number; text: string; tone: 'info' | 'error' };
 
 const API_URL = import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:8000';
+// Modo de conferência: ?camada=rooftop mostra só os pontos gerados localmente.
+const ROOFTOP_ONLY = new URLSearchParams(window.location.search).get('camada') === 'rooftop';
 const CENTRO = [-38.223898, -9.402317] as [number, number];
 const ZOOM_INICIAL = 16.5;
 // Acima de 60° o horizonte entra na tela e puxa a cidade inteira para um
@@ -146,13 +156,21 @@ export default function App() {
   }, [theme]);
   const [styleRevision, setStyleRevision] = useState(0);
 
-  const [selectedId, setSelectedId] = useState<string | null>(selectedFromUrl);
+  const [selectedId, setSelectedId] = useState<string | null>(ROOFTOP_ONLY ? null : selectedFromUrl);
   const [selectedDetail, setSelectedDetail] = useState<{ id: string; feature: GeoJsonFeature } | null>(null);
   const [selectedPreview, setSelectedPreview] = useState<{ id: string; feature: GeoJsonFeature } | null>(null);
   const [showPontos, setShowPontos] = useState(true);
   const [soDoSelecionado, setSoDoSelecionado] = useState(false);
   const [hiddenTipos, setHiddenTipos] = useState<ReadonlySet<string>>(new Set());
   const [showReport, setShowReport] = useState(false);
+  const [showRooftop, setShowRooftop] = useState(ROOFTOP_ONLY);
+  const [rooftopOptions, setRooftopOptions] = useState<RooftopOptions>(defaultRooftopOptions);
+  const [rooftopMeta, setRooftopMeta] = useState<MapMeta | null>(null);
+  const [rooftopSelection, setRooftopSelection] = useState<RooftopSelection | null>(null);
+  const rooftopOptionsRef = useRef(rooftopOptions);
+  useEffect(() => {
+    rooftopOptionsRef.current = rooftopOptions;
+  }, [rooftopOptions]);
   // O mapa cujo estilo terminou de carregar / que já tem as camadas de dados.
   // Guardar a instância, e não um booleano, evita usar um mapa novo (recriado
   // no hot reload) antes de o estilo dele carregar.
@@ -254,6 +272,19 @@ export default function App() {
     map.addControl(new maplibregl.ScaleControl({ unit: 'metric', maxWidth: 96 }), 'bottom-right');
 
     const onClick = (event: MapLayerMouseEvent) => {
+      const rooftopLayers = ROOFTOP_CLICKABLE_LAYERS.filter((layer) => map.getLayer(layer));
+      if (rooftopLayers.length) {
+        const rooftop = map.queryRenderedFeatures(event.point, { layers: rooftopLayers })[0];
+        if (rooftop) {
+          const properties = (rooftop.properties ?? {}) as Record<string, unknown>;
+          const kind = rooftop.layer.id === ROOFTOP_POLYGON_LAYER ? 'polygon' : 'point';
+          const id = String(kind === 'polygon' ? properties.bld_id : properties.addr_key);
+          setRooftopSelection({ kind, id, properties });
+          select(null);
+          return;
+        }
+      }
+      setRooftopSelection(null);
       if (typeof legendSource(map.getZoom()) === 'number') {
         const cell = map.queryRenderedFeatures(event.point, { layers: OVERVIEW_LAYERS.filter((l) => map.getLayer(l)) })[0];
         if (cell) {
@@ -324,7 +355,7 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
     const controller = new AbortController();
-    fetchJson(`${API_URL}/api/map/meta`, controller.signal)
+    fetchJson(`${API_URL}${ROOFTOP_ONLY ? '/api/rooftop/vila-nobre/meta' : '/api/map/meta'}`, controller.signal)
       .then((data: MapMeta) => setMeta(data))
       .catch(() => {
         if (!controller.signal.aborted) notify(`Servidor de dados fora do ar (${API_URL}).`, 'error');
@@ -333,9 +364,29 @@ export default function App() {
   }, [notify, user]);
 
   useEffect(() => {
+    if (!user || ROOFTOP_ONLY || !showRooftop) return;
+    const controller = new AbortController();
+    fetchJson(`${API_URL}/api/rooftop/vila-nobre/meta`, controller.signal)
+      .then((data: MapMeta) => setRooftopMeta(data))
+      .catch(() => {
+        if (!controller.signal.aborted) notify('Não foi possível carregar os metadados do rooftop.', 'error');
+      });
+    return () => controller.abort();
+  }, [notify, showRooftop, user]);
+
+  useEffect(() => {
     const map = readyMap;
     if (!map || map !== mapRef.current || !meta) return;
-    addDataLayers(map, meta, API_URL, labelLayerRef.current, theme);
+    if (ROOFTOP_ONLY) {
+      addRooftopLayer(map, API_URL, labelLayerRef.current, theme);
+      applyRooftopFilters(map, rooftopOptionsRef.current);
+      if (meta.bounds) {
+        const [west, south, east, north] = meta.bounds;
+        map.fitBounds([[west, south], [east, north]], { padding: panelPadding(48), pitch: 0, bearing: 0 });
+      }
+    } else {
+      addDataLayers(map, meta, API_URL, labelLayerRef.current, theme);
+    }
     setDataMap(map);
     // Cursor de mão sobre o que dá para clicar.
     const pointer = () => { map.getCanvas().style.cursor = 'pointer'; };
@@ -350,14 +401,45 @@ export default function App() {
         map.off('mouseenter', layer, pointer);
         map.off('mouseleave', layer, reset);
       }
-      if (mapRef.current === map) removeDataLayers(map);
+      if (mapRef.current === map) {
+        if (ROOFTOP_ONLY) removeRooftopLayer(map);
+        else removeDataLayers(map);
+      }
     };
   }, [readyMap, meta, styleRevision, theme]);
+
+  // Camada rooftop opcional sobre os dados do Atlas.
+  useEffect(() => {
+    const map = dataMap;
+    if (!map || map !== mapRef.current || ROOFTOP_ONLY || !showRooftop) return;
+    addRooftopLayer(map, API_URL, labelLayerRef.current, theme);
+    applyRooftopFilters(map, rooftopOptionsRef.current);
+    const pointer = () => { map.getCanvas().style.cursor = 'pointer'; };
+    const reset = () => { map.getCanvas().style.cursor = ''; };
+    for (const layer of ROOFTOP_CLICKABLE_LAYERS) {
+      map.on('mouseenter', layer, pointer);
+      map.on('mouseleave', layer, reset);
+    }
+    return () => {
+      for (const layer of ROOFTOP_CLICKABLE_LAYERS) {
+        map.off('mouseenter', layer, pointer);
+        map.off('mouseleave', layer, reset);
+      }
+      if (mapRef.current === map) removeRooftopLayer(map);
+    };
+  }, [dataMap, showRooftop, styleRevision, theme]);
+
+  // Filtros e visibilidade mudam sem recarregar o GeoJSON.
+  useEffect(() => {
+    const map = dataMap ?? readyMap;
+    if (!map || map !== mapRef.current) return;
+    applyRooftopFilters(map, rooftopOptions);
+  }, [dataMap, readyMap, rooftopOptions, styleRevision]);
 
   // --- Seleção -----------------------------------------------------------
 
   useEffect(() => {
-    if (!selectedId || !user) return;
+    if (ROOFTOP_ONLY || !selectedId || !user) return;
     const controller = new AbortController();
     fetchJson(`${API_URL}/api/buildings/${encodeURIComponent(selectedId)}`, controller.signal)
       .then((feature: GeoJsonFeature) => setSelectedDetail({ id: selectedId, feature }))
@@ -387,7 +469,7 @@ export default function App() {
 
   useEffect(() => {
     const map = readyMap;
-    if (!map || map !== mapRef.current) return;
+    if (!map || map !== mapRef.current || ROOFTOP_ONLY) return;
     const source = map.getSource('selected') as maplibregl.GeoJSONSource | undefined;
     const isBuilding = selected3dFeature
       && ['Polygon', 'MultiPolygon'].includes(selected3dFeature.geometry.type)
@@ -412,20 +494,20 @@ export default function App() {
 
   useEffect(() => {
     const map = dataMap;
-    if (!map || map !== mapRef.current) return;
+    if (!map || map !== mapRef.current || ROOFTOP_ONLY) return;
     applyDataFilters(map, { showPontos, soDoSelecionado, selectedGeometryKey, tipos }, theme);
   }, [dataMap, showPontos, soDoSelecionado, selectedGeometryKey, tipos, theme, styleRevision]);
 
   useEffect(() => {
     const map = dataMap;
-    if (!map || map !== mapRef.current) return;
+    if (!map || map !== mapRef.current || ROOFTOP_ONLY) return;
     setAllBuildings3d(map, all3d);
     saveAll3d(all3d);
   }, [dataMap, all3d, styleRevision]);
 
   useEffect(() => {
     const map = dataMap;
-    if (!map || map !== mapRef.current) return;
+    if (!map || map !== mapRef.current || ROOFTOP_ONLY) return;
     const updateVisibleCounts = () => {
       const source = legendSource(map.getZoom());
       const next = typeof source === 'number'
@@ -522,6 +604,11 @@ export default function App() {
     navigator.clipboard?.writeText(text).then(() => notify(label), () => notify('Não foi possível copiar.', 'error'));
   }, [notify]);
 
+  const toggleRooftop = useCallback((value: boolean) => {
+    setShowRooftop(value);
+    if (!value) setRooftopSelection(null);
+  }, []);
+
   const toggleTipo = useCallback((tipo: string) => {
     setHiddenTipos((hidden) => {
       const next = new Set(hidden);
@@ -599,7 +686,7 @@ export default function App() {
           <span className="brand-mark"><Icon name="building" size={18} /></span>
           <div style={{ flex: 1, minWidth: 0 }}>
             <h1>Atlas Urbano</h1>
-            <p>Paulo Afonso · BA</p>
+            <p>{ROOFTOP_ONLY ? 'Vila Nobre · CNEFE rooftop (local)' : 'Paulo Afonso · BA'}</p>
           </div>
           <button
             type="button"
@@ -639,9 +726,31 @@ export default function App() {
             }}
           />
         )}
-        <SearchBox ref={searchRef} apiUrl={API_URL} onPick={onSearchPick} onFocusChange={(focused) => focused && setSheetOpen(true)} />
+        {!ROOFTOP_ONLY && <SearchBox ref={searchRef} apiUrl={API_URL} onPick={onSearchPick} onFocusChange={(focused) => focused && setSheetOpen(true)} />}
         <div className="sidebar-body">
-          {selectedId ? (
+          {rooftopSelection ? (
+            <RooftopCard
+              selection={rooftopSelection}
+              theme={theme}
+              onClose={() => setRooftopSelection(null)}
+              onCopy={copy}
+            />
+          ) : ROOFTOP_ONLY ? (
+            <div className="layers">
+              <div className="stat-hero">
+                <span className="stat-value">{meta?.address_count ?? 0}</span>
+                <span className="stat-caption">pontos rooftop gerados localmente</span>
+              </div>
+              <RooftopControls
+                value={rooftopOptions}
+                onChange={setRooftopOptions}
+                meta={meta}
+                theme={theme}
+              />
+              <p className="hint">Camada de conferência do algoritmo CNEFE rooftop. As fontes do Atlas estão desligadas neste modo. Clique num ponto ou polígono para ver o detalhe.</p>
+              <p className="muted small">Aproxime o mapa para visualizar os rótulos dos endereços.</p>
+            </div>
+          ) : selectedId ? (
             <BuildingCard
               building={selectedProps ?? null}
               previewTipo={selected3dFeature?.properties?.tipo}
@@ -669,6 +778,11 @@ export default function App() {
               soDoSelecionado={soDoSelecionado}
               onSoDoSelecionado={setSoDoSelecionado}
               hasSelection={Boolean(selectedId)}
+              showRooftop={showRooftop}
+              onShowRooftop={toggleRooftop}
+              rooftopMeta={rooftopMeta}
+              rooftopOptions={rooftopOptions}
+              onRooftopOptions={setRooftopOptions}
             />
           )}
         </div>

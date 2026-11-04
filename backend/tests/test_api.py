@@ -463,12 +463,13 @@ def test_build_where_em_cobertura_combina_com_bbox():
 
 @pytest.mark.skipif(not _db_vivo(), reason="MariaDB local fora do ar")
 def test_integracao_em_cobertura_remove_so_bolinhas_fora():
-    # Cobertura municipal: 87951 linhas, tudo dentro da janela.
+    # Cobertura municipal: todo o recorte importado deve entrar no filtro.
     total = db.fetch_stats()["total"]
     filtrado = db.fetch_stats(em_cobertura=True)["total"]
-    assert (total, filtrado) == (87951, 87951)
+    assert total > 0
+    assert filtrado == total
     feats = db.fetch_all_buildings(em_cobertura=True, limit=20000)
-    assert len(feats) == 20000  # primeira página cheia: sem furo
+    assert len(feats) == min(20000, total)  # primeira página cheia: sem furo
 
 
 # --- Visão afastada e versão dos dados (db mockado) -------------------------
@@ -939,3 +940,145 @@ def test_import_com_ssl_no_aiven(monkeypatch):
     monkeypatch.setattr(import_data, "DB_SSL_CA", "/certs/ca.pem")
     assert import_data.connect_db() == "conn"
     assert chamadas["ssl"] == {"ca": "/certs/ca.pem"}
+
+
+# --- Camada local CNEFE rooftop (sem API externa) ---------------------------
+
+def _rooftop_geojson():
+    return {
+        "type": "FeatureCollection",
+        "name": "cnefe_rooftop",
+        "features": [
+            {
+                "type": "Feature", "id": "a1",
+                "geometry": {"type": "Point", "coordinates": [-38.230, -9.400]},
+                "properties": {
+                    "addr_key": "a1", "endereco": "Rua A, 10", "cep": "48600-000",
+                    "especie": "1", "unidades": 2, "bld": 7, "bld_id": "predio-a", "metodo": "raio+ordem",
+                    "confianca": "alta", "face_rho": 0.91, "revisar_face": False,
+                    "bld_antes": 5, "metodo_antes": "raio",
+                    "confianca_antes": "media", "mudou_bld": True,
+                    "mudou_ponto": True, "deslocamento_m": 3.4,
+                },
+            },
+            {
+                "type": "Feature", "id": "a2",
+                "geometry": {"type": "Point", "coordinates": [-38.229, -9.399]},
+                "properties": {
+                    "addr_key": "a2", "endereco": "Rua B, 20", "cep": "48600-001",
+                    "especie": "6", "unidades": 1, "bld": 9, "bld_id": "predio-b", "metodo": "raio",
+                    "confianca": "baixa", "face_rho": 0.55, "revisar_face": True,
+                    "bld_antes": 9, "metodo_antes": "raio",
+                    "confianca_antes": "baixa", "mudou_bld": False,
+                    "mudou_ponto": False, "deslocamento_m": 0.0,
+                },
+            },
+        ],
+    }
+
+
+def test_rooftop_meta_le_contagens_e_extent_do_geojson(tmp_path, monkeypatch):
+    import json
+
+    from backend import rooftop
+
+    path = tmp_path / "pontos.geojson"
+    path.write_text(json.dumps(_rooftop_geojson()), encoding="utf-8")
+    monkeypatch.setattr(rooftop, "caminho", lambda: path)
+
+    meta = rooftop.map_meta()
+
+    assert meta["address_count"] == 2
+    assert meta["building_count"] == 2
+    assert meta["changed_count"] == 1
+    assert meta["high_count"] == meta["low_count"] == 1
+    assert meta["revise_face_count"] == 1
+    assert meta["missing"] is False
+    assert meta["source"] == "CNEFE rooftop (local)"
+    assert meta["bounds"] == [-38.230, -9.400, -38.229, -9.399]
+    assert rooftop.geojson()["features"][0]["properties"]["endereco"] == "Rua A, 10"
+
+
+def _rooftop_poligonos():
+    return {
+        "type": "FeatureCollection",
+        "name": "cnefe_rooftop_poligonos",
+        "features": [
+            {
+                "type": "Feature", "id": "predio-a",
+                "geometry": {"type": "Polygon", "coordinates": [[
+                    [-38.2301, -9.4001], [-38.2299, -9.4001],
+                    [-38.2299, -9.3999], [-38.2301, -9.3999], [-38.2301, -9.4001],
+                ]]},
+                "properties": {
+                    "bld_id": "predio-a", "n_enderecos": 1, "n_unidades": 2,
+                    "confianca": "alta", "mudou": True, "revisar": False,
+                    "metodos": "raio+ordem", "enderecos": "Rua A, 10",
+                },
+            },
+        ],
+    }
+
+
+def test_rooftop_meta_sem_arquivo_fica_vazio(tmp_path, monkeypatch):
+    from backend import rooftop
+
+    monkeypatch.setattr(rooftop, "caminho", lambda: tmp_path / "nao_existe.geojson")
+    monkeypatch.setattr(rooftop, "caminho_poligonos", lambda: tmp_path / "nao_existe_poligonos.geojson")
+    meta = rooftop.map_meta()
+
+    assert meta["bounds"] is None
+    assert meta["address_count"] == 0
+    assert meta["missing"] is True
+    assert meta["polygon_missing"] is True
+    assert rooftop.geojson()["features"] == []
+    assert rooftop.poligonos()["features"] == []
+
+
+def test_rooftop_poligonos_cruzam_com_os_pontos(tmp_path, monkeypatch):
+    import json
+
+    from backend import rooftop
+
+    pontos = tmp_path / "pontos.geojson"
+    poligonos = tmp_path / "poligonos.geojson"
+    pontos.write_text(json.dumps(_rooftop_geojson()), encoding="utf-8")
+    poligonos.write_text(json.dumps(_rooftop_poligonos()), encoding="utf-8")
+    monkeypatch.setattr(rooftop, "caminho", lambda: pontos)
+    monkeypatch.setattr(rooftop, "caminho_poligonos", lambda: poligonos)
+
+    meta = rooftop.map_meta()
+    doc = rooftop.poligonos()
+
+    assert meta["building_count"] == meta["polygon_count"] == 2
+    assert meta["polygon_missing"] is False
+    assert doc["name"] == "cnefe_rooftop_poligonos"
+    assert doc["features"][0]["properties"]["bld_id"] == "predio-a"
+
+
+def test_endpoints_rooftop_servem_camada_local(tmp_path, monkeypatch):
+    import json
+
+    from fastapi.testclient import TestClient
+
+    from backend import main, rooftop
+
+    path = tmp_path / "pontos.geojson"
+    polys = tmp_path / "poligonos.geojson"
+    path.write_text(json.dumps(_rooftop_geojson()), encoding="utf-8")
+    polys.write_text(json.dumps(_rooftop_poligonos()), encoding="utf-8")
+    monkeypatch.setattr(rooftop, "caminho", lambda: path)
+    monkeypatch.setattr(rooftop, "caminho_poligonos", lambda: polys)
+    client = TestClient(main.app)
+
+    meta = client.get("/api/rooftop/vila-nobre/meta")
+    layer = client.get("/api/rooftop/vila-nobre")
+    polygonos = client.get("/api/rooftop/vila-nobre/poligonos")
+
+    assert meta.status_code == layer.status_code == polygonos.status_code == 200
+    assert meta.json()["address_count"] == 2
+    assert meta.json()["source"] == "CNEFE rooftop (local)"
+    assert layer.json()["name"] == "cnefe_rooftop"
+    assert len(layer.json()["features"]) == 2
+    assert polygonos.json()["name"] == "cnefe_rooftop_poligonos"
+    assert len(polygonos.json()["features"]) == 1

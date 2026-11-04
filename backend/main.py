@@ -20,7 +20,7 @@ import numpy as np
 import shapely
 from shapely.geometry import box
 
-from . import auth, db
+from . import auth, db, rooftop
 from .overview import LEVEL_CELL_DEG, build_overview
 from .schemas import AuthToken, UserCreate, UserLogin, UserPublic
 from .tile_cache import TileCache
@@ -158,6 +158,24 @@ def map_meta(usuario: dict = Depends(auth.get_current_user)):
     overview = _overview_for(version)
     _start_warmup(version, overview["cells"])
     return {"version": version, "bounds": overview["bounds"], "levels": len(LEVEL_CELL_DEG)}
+
+
+@app.get("/api/rooftop/vila-nobre/meta")
+def rooftop_vila_nobre_meta(usuario: dict = Depends(auth.get_current_user)):
+    """Extent e contagens da camada local do CNEFE rooftop; sem API externa."""
+    return rooftop.map_meta()
+
+
+@app.get("/api/rooftop/vila-nobre")
+def rooftop_vila_nobre(usuario: dict = Depends(auth.get_current_user)):
+    """Pontos rooftop gerados localmente pelo cnefe_rooftop.py."""
+    return JSONResponse(content=rooftop.geojson())
+
+
+@app.get("/api/rooftop/vila-nobre/poligonos")
+def rooftop_vila_nobre_poligonos(usuario: dict = Depends(auth.get_current_user)):
+    """Prédios que receberam pontos, com o resumo do cruzamento."""
+    return JSONResponse(content=rooftop.poligonos())
 
 
 @app.get("/api/map/overview")
